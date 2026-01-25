@@ -1,0 +1,8 @@
+
+{
+  "name": "PaceLink",
+  "description": "A professional running coach platform for managing students and delivering structured workouts with real-time tracking.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}

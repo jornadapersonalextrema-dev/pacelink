@@ -1,0 +1,44 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #30e87a;
+  --background-light: #f6f8f7;
+  --background-dark: #112117;
+  --surface-dark: #1a2f23;
+}
+
+@layer base {
+  body {
+    @apply font-display;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Lexend', sans-serif;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .text-giant {
+    font-size: clamp(3.5rem, 15vw, 5rem);
+    line-height: 1;
+  }
+}
+
+.bg-primary { background-color: var(--primary); }
+.text-primary { color: var(--primary); }
+.dark .bg-surface-dark { background-color: var(--surface-dark); }
+
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+    -webkit-appearance: none; 
+    margin: 0; 
+}
