@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabaseBrowser';
 import { Topbar } from '@/components/Topbar';
 import { Button } from '@/components/Button';
+import Link from 'next/link';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -95,6 +96,12 @@ export default function LoginPage() {
             <Button type="submit" fullWidth disabled={loading}>
               {loading ? 'Entrando...' : 'Entrar'}
             </Button>
+
+            <div className="text-center mt-4">
+              <Link href="/signup" className="text-sm text-brand-600 hover:text-brand-500 dark:text-brand-400">
+                Primeiro acesso? Cadastre-se
+              </Link>
+            </div>
           </form>
         </div>
       </main>

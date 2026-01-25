@@ -10,12 +10,6 @@
   --surface-dark: #1a2f23;
 }
 
-@layer base {
-  body {
-    @apply font-display;
-  }
-}
-
 @layer utilities {
   .font-display {
     font-family: 'Lexend', sans-serif;
