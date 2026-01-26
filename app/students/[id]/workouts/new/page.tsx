@@ -3,9 +3,9 @@
 
 import React, { useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { Topbar } from '../../../../components/Topbar';
-import { Button } from '../../../../components/Button';
-import { Card } from '../../../../components/Card';
+import { Topbar } from '@/components/Topbar';
+import { Button } from '@/components/Button';
+import { Card } from '@/components/Card';
 
 export default function NewWorkoutPage() {
   const router = useRouter();
