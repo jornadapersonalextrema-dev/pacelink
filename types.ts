@@ -24,10 +24,11 @@ export interface Student {
   id: string;
   name: string;
   email?: string;
-  coach_id?: string;
+  trainer_id?: string;
   goal: string;
   avatarUrl: string;
   referencePace: string;
   vo2Max?: number;
   location?: string;
+  p1k_sec_per_km?: number;
 }

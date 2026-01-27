@@ -2,803 +2,505 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabaseBrowser';
-import { Topbar } from '@/components/Topbar';
-import { Button } from '@/components/Button';
-import { Card } from '@/components/Card';
+import { createClient } from '@supabase/supabase-js';
 
-type WorkoutType = 'rodagem' | 'progressivo' | 'alternado';
-type Intensity = 'leve' | 'moderado' | 'forte';
+import Topbar from '../../../../../components/Topbar';
+import { Button } from '../../../../../components/Button';
+import { Card } from '../../../../../components/Card';
 
-type PaceRange = {
-  min: string; // "5:30"
-  max: string; // "6:10"
-};
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-type Block = {
+type WorkoutType = 'easy' | 'progressive' | 'interval';
+type Intensity = 'easy' | 'moderate' | 'hard';
+
+type StudentRow = {
   id: string;
-  distance_km: number;
-  intensity: Intensity;
-  pace_range?: PaceRange | null;
+  trainer_id: string;
+  name: string;
+  email: string | null;
+  p1k_sec_per_km: number;
+  created_at: string;
+  updated_at: string;
 };
 
-function uid(prefix = 'b') {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
+type BlockUI = {
+  id: string;
+  distanceKm: string; // string para permitir apagar/editar livremente
+  intensity: Intensity;
+};
+
+function paceMinKmFromSeconds(secondsPerKm?: number | null) {
+  if (!secondsPerKm || secondsPerKm <= 0) return '—';
+  const min = Math.floor(secondsPerKm / 60);
+  const sec = Math.round(secondsPerKm % 60);
+  return `${min}:${sec.toString().padStart(2, '0')}`;
 }
 
-function clamp(n: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, n));
+function toNumberOrNull(value: string): number | null {
+  const normalized = value.replace(',', '.').trim();
+  if (!normalized) return null;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
 }
 
-function parsePaceToSeconds(pace: string): number | null {
-  const m = pace.trim().match(/^(\d+):(\d{2})$/);
-  if (!m) return null;
-  const mm = Number(m[1]);
-  const ss = Number(m[2]);
-  if (!Number.isFinite(mm) || !Number.isFinite(ss)) return null;
-  if (ss < 0 || ss > 59) return null;
-  return mm * 60 + ss;
-}
-
-function formatSecondsToPace(total: number): string {
-  const mm = Math.floor(total / 60);
-  const ss = total % 60;
-  return `${mm}:${String(ss).padStart(2, '0')}`;
-}
-
-function addPace(pace: string, deltaSeconds: number): string | null {
-  const base = parsePaceToSeconds(pace);
-  if (base == null) return null;
-  const out = base + deltaSeconds;
-  if (out <= 0) return null;
-  return formatSecondsToPace(out);
-}
-
-function p1kToRanges(p1k: string) {
-  // Regras simples (MVP):
-  // Leve: P1k + 1:30 a +2:30
-  // Moderado: P1k + 0:45 a +1:30
-  // Forte: P1k + 0:15 a +0:45
-  const leveMin = addPace(p1k, 90);
-  const leveMax = addPace(p1k, 150);
-  const modMin = addPace(p1k, 45);
-  const modMax = addPace(p1k, 90);
-  const forteMin = addPace(p1k, 15);
-  const forteMax = addPace(p1k, 45);
-
-  const mk = (a: string | null, b: string | null): PaceRange | null => {
-    if (!a || !b) return null;
-    const sa = parsePaceToSeconds(a);
-    const sb = parsePaceToSeconds(b);
-    if (sa == null || sb == null) return null;
-    const lo = Math.min(sa, sb);
-    const hi = Math.max(sa, sb);
-    return { min: formatSecondsToPace(lo), max: formatSecondsToPace(hi) };
-  };
-
-  return {
-    leve: mk(leveMin, leveMax),
-    moderado: mk(modMin, modMax),
-    forte: mk(forteMin, forteMax),
-  };
-}
-
-function intensityLabel(i: Intensity) {
-  if (i === 'leve') return 'Leve';
-  if (i === 'moderado') return 'Moderado';
-  return 'Forte';
+function toNumberOrZero(value: string): number {
+  const n = toNumberOrNull(value);
+  return n ?? 0;
 }
 
 function workoutTypeLabel(t: WorkoutType) {
-  if (t === 'rodagem') return 'Rodagem';
-  if (t === 'progressivo') return 'Progressivo';
-  return 'Alternado';
+  switch (t) {
+    case 'easy':
+      return 'Rodagem';
+    case 'progressive':
+      return 'Progressivo';
+    case 'interval':
+      return 'Alternado';
+  }
+}
+
+function workoutTypePlaceholder(t: WorkoutType) {
+  switch (t) {
+    case 'easy':
+      return 'Ex: Rodagem leve';
+    case 'progressive':
+      return 'Ex: Progressivo 5 km';
+    case 'interval':
+      return 'Ex: Alternado 10x (1 km forte / 1 km leve)';
+  }
+}
+
+function intensityLabel(i: Intensity) {
+  switch (i) {
+    case 'easy':
+      return 'Leve';
+    case 'moderate':
+      return 'Moderado';
+    case 'hard':
+      return 'Forte';
+  }
 }
 
 export default function NewWorkoutPage() {
   const router = useRouter();
   const params = useParams();
-  const studentId = (params?.id as string) || '';
-  const supabase = useMemo(() => createClient(), []);
 
-  const [loading, setLoading] = useState(false);
+  const studentId = useMemo(() => {
+    const raw = (params as any)?.id;
+    return Array.isArray(raw) ? raw[0] : raw;
+  }, [params]);
+
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [studentName, setStudentName] = useState<string>('');
-  const [studentP1k, setStudentP1k] = useState<string>('5:00');
+  const [student, setStudent] = useState<StudentRow | null>(null);
 
-  const [workoutId, setWorkoutId] = useState<string | null>(null);
-  const [shareSlug, setShareSlug] = useState<string | null>(null);
+  const [title, setTitle] = useState('');
+  const [workoutType, setWorkoutType] = useState<WorkoutType>('easy');
 
-  const [workoutType, setWorkoutType] = useState<WorkoutType>('rodagem');
-  const [title, setTitle] = useState<string>('');
-  const [notes, setNotes] = useState<string>('');
+  const [includeWarmup, setIncludeWarmup] = useState(true);
+  const [warmupKm, setWarmupKm] = useState('2');
+  const [warmupPace, setWarmupPace] = useState<'free' | 'p1k'>('free');
 
-  const [warmupEnabled, setWarmupEnabled] = useState(true);
-  const [warmupDistance, setWarmupDistance] = useState<number>(2);
-  const [cooldownEnabled, setCooldownEnabled] = useState(true);
-  const [cooldownDistance, setCooldownDistance] = useState<number>(1);
+  const [includeCooldown, setIncludeCooldown] = useState(false);
+  const [cooldownKm, setCooldownKm] = useState('1');
+  const [cooldownPace, setCooldownPace] = useState<'free' | 'p1k'>('free');
 
-  // Rodagem: 1 bloco principal
-  const [easyDistance, setEasyDistance] = useState<number>(5);
-
-  // Progressivo: lista de blocos principais
-  const [progressionBlocks, setProgressionBlocks] = useState<Block[]>([
-    { id: uid(), distance_km: 2, intensity: 'leve' },
-    { id: uid(), distance_km: 2, intensity: 'moderado' },
-    { id: uid(), distance_km: 1, intensity: 'forte' },
+  const [blocks, setBlocks] = useState<BlockUI[]>([
+    { id: crypto.randomUUID(), distanceKm: '5', intensity: 'moderate' },
   ]);
 
-  // Alternado: blocos repetidos (trabalho/recuperação)
-  const [altWorkDistance, setAltWorkDistance] = useState<number>(1);
-  const [altRestDistance, setAltRestDistance] = useState<number>(1);
-  const [altReps, setAltReps] = useState<number>(4);
+  const [notes, setNotes] = useState('');
 
-  const [defaultIntensity, setDefaultIntensity] = useState<Intensity>('leve');
-
-  const ranges = useMemo(() => p1kToRanges(studentP1k), [studentP1k]);
-
-  useEffect(() => {
-    // Título padrão por tipo (PT-BR)
-    const base =
-      workoutType === 'rodagem'
-        ? 'Rodagem'
-        : workoutType === 'progressivo'
-        ? 'Progressivo'
-        : 'Alternado';
-
-    setTitle((prev) => (prev?.trim().length ? prev : `${base}`));
-    // default intensity para rodagem
-    if (workoutType === 'rodagem') setDefaultIntensity('leve');
-  }, [workoutType]);
+  const totalKmEstimate = useMemo(() => {
+    const mainKm = blocks.reduce((acc, b) => acc + toNumberOrZero(b.distanceKm), 0);
+    const w = includeWarmup ? toNumberOrZero(warmupKm) : 0;
+    const c = includeCooldown ? toNumberOrZero(cooldownKm) : 0;
+    const total = mainKm + w + c;
+    return Math.round(total * 10) / 10;
+  }, [blocks, includeWarmup, warmupKm, includeCooldown, cooldownKm]);
 
   useEffect(() => {
-    const load = async () => {
+    async function load() {
       try {
         setLoading(true);
         setError(null);
 
-        // carrega aluno (nome + p1k)
-        const { data: s, error: sErr } = await supabase
+        if (!studentId) {
+          setError('ID do aluno não encontrado na URL.');
+          return;
+        }
+
+        const { data, error: e } = await supabase
           .from('students')
-          .select('id,name,p1k_pace')
+          .select('id,trainer_id,name,email,p1k_sec_per_km,created_at,updated_at')
           .eq('id', studentId)
           .single();
 
-        if (sErr) throw sErr;
-
-        setStudentName(s?.name ?? '');
-        setStudentP1k(s?.p1k_pace ?? '5:00');
+        if (e) throw e;
+        setStudent(data as StudentRow);
       } catch (e: any) {
-        setError(e?.message || 'Erro ao carregar aluno');
+        setError(e?.message || 'Falha ao carregar aluno.');
       } finally {
         setLoading(false);
       }
-    };
-
-    if (studentId) load();
-  }, [studentId, supabase]);
-
-  const totalDistance = useMemo(() => {
-    let total = 0;
-    if (warmupEnabled) total += warmupDistance;
-    if (cooldownEnabled) total += cooldownDistance;
-
-    if (workoutType === 'rodagem') {
-      total += easyDistance;
-    } else if (workoutType === 'progressivo') {
-      total += progressionBlocks.reduce((acc, b) => acc + (b.distance_km || 0), 0);
-    } else {
-      total += altReps * (altWorkDistance + altRestDistance);
-    }
-    return Math.max(0, Number.isFinite(total) ? total : 0);
-  }, [
-    warmupEnabled,
-    warmupDistance,
-    cooldownEnabled,
-    cooldownDistance,
-    workoutType,
-    easyDistance,
-    progressionBlocks,
-    altReps,
-    altWorkDistance,
-    altRestDistance,
-  ]);
-
-  function buildMainBlocks(): Block[] {
-    if (workoutType === 'rodagem') {
-      return [
-        {
-          id: uid(),
-          distance_km: easyDistance,
-          intensity: defaultIntensity,
-          pace_range: ranges[defaultIntensity] ?? null,
-        },
-      ];
     }
 
-    if (workoutType === 'progressivo') {
-      return progressionBlocks.map((b) => ({
-        ...b,
-        pace_range: ranges[b.intensity] ?? null,
-      }));
-    }
+    load();
+  }, [studentId]);
 
-    // alternado: gera sequência trabalho/recuperação repetida
-    const out: Block[] = [];
-    for (let i = 0; i < altReps; i++) {
-      out.push({
-        id: uid('w'),
-        distance_km: altWorkDistance,
-        intensity: 'forte',
-        pace_range: ranges.forte ?? null,
-      });
-      out.push({
-        id: uid('r'),
-        distance_km: altRestDistance,
-        intensity: 'leve',
-        pace_range: ranges.leve ?? null,
-      });
-    }
-    return out;
+  function addBlock() {
+    setBlocks((prev) => [
+      ...prev,
+      { id: crypto.randomUUID(), distanceKm: '', intensity: 'easy' },
+    ]);
   }
 
-  function buildPayload(nextShareSlug?: string | null) {
-    const blocks = buildMainBlocks();
-
-    const payload = {
-      student_id: studentId,
-      title: title?.trim() || workoutTypeLabel(workoutType),
-      type: workoutType,
-      notes: notes?.trim() || null,
-      status: 'draft' as const,
-      // estrutura
-      warmup_enabled: warmupEnabled,
-      warmup_distance_km: warmupEnabled ? warmupDistance : 0,
-      cooldown_enabled: cooldownEnabled,
-      cooldown_distance_km: cooldownEnabled ? cooldownDistance : 0,
-      // blocos principais serializados
-      blocks: blocks.map((b, idx) => ({
-        order_index: idx + 1,
-        distance_km: b.distance_km,
-        intensity: b.intensity,
-        pace_min: b.pace_range?.min ?? null,
-        pace_max: b.pace_range?.max ?? null,
-      })),
-      share_slug: nextShareSlug ?? shareSlug ?? null,
-      updated_at: new Date().toISOString(),
-    };
-
-    return payload;
+  function removeBlock(id: string) {
+    setBlocks((prev) => prev.filter((b) => b.id !== id));
   }
 
-  async function ensureUniqueSlug(base: string) {
-    // tenta base, base-2, base-3...
-    const slugBase = base.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '');
-    let candidate = slugBase || `treino-${Date.now()}`;
-    for (let i = 0; i < 8; i++) {
-      const trySlug = i === 0 ? candidate : `${candidate}-${i + 1}`;
-      const { data, error } = await supabase
-        .from('workouts')
-        .select('id')
-        .eq('share_slug', trySlug)
-        .limit(1);
-
-      if (error) throw error;
-      if (!data || data.length === 0) return trySlug;
-    }
-    return `${candidate}-${Date.now()}`;
+  function updateBlock(id: string, patch: Partial<BlockUI>) {
+    setBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
   }
 
-  async function upsertWorkout(markReadyForShare = false) {
+  async function upsertWorkout(status: 'draft' | 'ready') {
     try {
       setSaving(true);
       setError(null);
 
-      // cria slug se necessário
-      const nextShareSlug =
-        shareSlug ??
-        (markReadyForShare
-          ? await ensureUniqueSlug(`${studentName || 'aluno'}-${title || workoutTypeLabel(workoutType)}`)
-          : null);
+      if (!student) throw new Error('Aluno não carregado.');
 
-      const payload = buildPayload(nextShareSlug);
-      if (markReadyForShare) (payload as any).status = 'ready';
-
-      let saved: { id: string; share_slug: string | null } | null = null;
-
-      if (!workoutId) {
-        const { data, error: dbErr } = await supabase
-          .from('workouts')
-          .insert(payload)
-          .select('id,share_slug')
-          .single();
-
-        if (dbErr) throw dbErr;
-        if (!data) throw new Error('Falha ao salvar o treino (insert).');
-        saved = data;
-        setWorkoutId(data.id);
-      } else {
-        const { data, error: dbErr } = await supabase
-          .from('workouts')
-          .update(payload)
-          .eq('id', workoutId)
-          .select('id,share_slug')
-          .single();
-
-        if (dbErr) throw dbErr;
-        if (!data) throw new Error('Falha ao salvar o treino (update).');
-        saved = data;
+      if (status === 'ready') {
+        const hasAnyMainKm = blocks.some((b) => (toNumberOrNull(b.distanceKm) ?? 0) > 0);
+        if (!hasAnyMainKm) throw new Error('Informe ao menos 1 bloco com distância.');
       }
 
-      if (!saved) throw new Error('Falha ao salvar o treino.');
+      const payload = {
+        trainer_id: student.trainer_id,
+        student_id: student.id,
+        title: title.trim() || null,
+        type: workoutType,
+        status,
+        include_warmup: includeWarmup,
+        warmup_km: includeWarmup ? toNumberOrZero(warmupKm) : 0,
+        warmup_pace: includeWarmup ? (warmupPace === 'p1k' ? 'p1k' : 'free') : null,
+        include_cooldown: includeCooldown,
+        cooldown_km: includeCooldown ? toNumberOrZero(cooldownKm) : 0,
+        cooldown_pace: includeCooldown ? (cooldownPace === 'p1k' ? 'p1k' : 'free') : null,
+        blocks: blocks.map((b) => ({
+          distance_km: toNumberOrZero(b.distanceKm),
+          intensity: b.intensity,
+        })),
+        notes: notes.trim() || null,
+        total_km: totalKmEstimate,
+      };
 
-      setShareSlug(saved.share_slug ?? nextShareSlug);
+      const { data, error: e } = await supabase
+        .from('workouts')
+        .insert(payload)
+        .select('id')
+        .single();
 
-      return saved.share_slug ?? nextShareSlug;
+      if (e) throw e;
+
+      router.push(`/students/${student.id}`);
     } catch (e: any) {
-      setError(e?.message || 'Erro ao salvar treino');
-      return null;
+      const msg = String(e?.message || 'Falha ao salvar treino.');
+      if (msg.includes('schema cache') || msg.includes('does not exist')) {
+        setError(
+          `Erro de banco de dados (coluna/tabela ausente). Verifique se "workouts" possui include_warmup, warmup_km, include_cooldown e cooldown_km. Detalhe: ${msg}`
+        );
+      } else {
+        setError(msg);
+      }
     } finally {
       setSaving(false);
     }
   }
 
-  async function handleSaveDraft() {
-    await upsertWorkout(false);
-  }
-
-  async function handleShare() {
-    const slug = await upsertWorkout(true);
-    if (!slug) return;
-
-    const url = `${window.location.origin}/w/${slug}`;
-    const msg =
-      `Treino de hoje 👇\n` +
-      `${title?.trim() || workoutTypeLabel(workoutType)}\n` +
-      `Distância total: ${totalDistance.toFixed(1)} km\n` +
-      `Abra o link e use o modo execução por blocos.\n\n` +
-      `${url}`;
-
-    try {
-      if (navigator.share) {
-        await navigator.share({ title: 'PaceLink - Treino', text: msg, url });
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(msg);
-        alert('Mensagem copiada! Cole no WhatsApp.');
-      } else {
-        alert(url);
-      }
-    } catch {
-      // usuário cancelou share, sem problemas
-    }
-  }
-
-  function addProgressionBlock() {
-    setProgressionBlocks((prev) => [
-      ...prev,
-      { id: uid(), distance_km: 1, intensity: 'moderado' },
-    ]);
-  }
-
-  function removeProgressionBlock(blockId: string) {
-    setProgressionBlocks((prev) => prev.filter((b) => b.id !== blockId));
-  }
-
-  function updateProgressionBlock(blockId: string, patch: Partial<Block>) {
-    setProgressionBlocks((prev) =>
-      prev.map((b) => (b.id === blockId ? { ...b, ...patch } : b))
-    );
-  }
-
   if (loading) {
     return (
-      <>
-        <Topbar title="Criar Treino" />
-        <main className="flex-1 p-6">
-          <div className="text-slate-300">Carregando...</div>
-        </main>
-      </>
+      <div className="min-h-screen flex items-center justify-center text-slate-500">
+        Carregando...
+      </div>
     );
   }
 
   return (
-    <>
-      <Topbar title="Criar Treino" />
+    <div className="min-h-screen bg-background-dark text-white">
+      <Topbar title="Criar Treino" backHref={student ? `/students/${student.id}` : '/students'} />
 
-      <main className="flex-1 flex flex-col p-6 gap-5 pb-28">
+      <main className="max-w-2xl mx-auto px-4 pb-28 pt-6">
         {error && (
-          <div className="rounded-lg bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-600 dark:text-red-400">
+          <div className="mb-4 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-red-200 text-sm">
             {error}
           </div>
         )}
 
-        <Card>
-          <div className="space-y-1">
-            <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Aluno</div>
-            <div className="text-lg font-semibold">{studentName || 'Aluno'}</div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">P1k: {studentP1k} min/km</div>
+        <Card className="mb-4 p-4">
+          <div className="text-xs font-bold tracking-widest text-slate-400 uppercase">Aluno</div>
+          <div className="mt-1 text-lg font-extrabold">{student?.name || '—'}</div>
+          <div className="mt-1 text-sm text-slate-400">
+            Ritmo P1K: {paceMinKmFromSeconds(student?.p1k_sec_per_km)} min/km
           </div>
         </Card>
 
-        <Card>
-          <div className="space-y-3">
-            <div className="text-sm font-semibold">Título do treino</div>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              placeholder="Ex.: Rodagem leve"
-            />
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              Distância total estimada: <span className="font-semibold">{totalDistance.toFixed(1)} km</span>
-            </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-bold mb-2">Título do treino</div>
+          <input
+            className="w-full h-12 px-4 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={workoutTypePlaceholder(workoutType)}
+          />
+          <div className="mt-2 text-xs text-slate-400">
+            Distância total estimada: <span className="font-bold">{totalKmEstimate}</span> km
           </div>
         </Card>
 
-        <Card>
-          <div className="space-y-3">
-            <div className="text-sm font-semibold">Tipo de Treino</div>
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setWorkoutType('rodagem')}
-                className={`flex-1 rounded-full px-3 py-2 text-sm font-semibold border ${
-                  workoutType === 'rodagem'
-                    ? 'bg-primary text-black border-transparent'
-                    : 'bg-transparent text-white border-slate-700'
-                }`}
-              >
-                🏃 Rodagem
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setWorkoutType('progressivo')}
-                className={`flex-1 rounded-full px-3 py-2 text-sm font-semibold border ${
-                  workoutType === 'progressivo'
-                    ? 'bg-primary text-black border-transparent'
-                    : 'bg-transparent text-white border-slate-700'
-                }`}
-              >
-                Progressivo
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setWorkoutType('alternado')}
-                className={`flex-1 rounded-full px-3 py-2 text-sm font-semibold border ${
-                  workoutType === 'alternado'
-                    ? 'bg-primary text-black border-transparent'
-                    : 'bg-transparent text-white border-slate-700'
-                }`}
-              >
-                Alternado
-              </button>
-            </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-bold mb-3">Tipo de Treino</div>
+          <div className="flex gap-2">
+            {(['easy', 'progressive', 'interval'] as WorkoutType[]).map((t) => {
+              const active = workoutType === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setWorkoutType(t)}
+                  className={[
+                    'h-11 px-5 rounded-full text-sm font-bold border',
+                    active
+                      ? 'bg-primary text-black border-primary'
+                      : 'bg-transparent text-white border-white/15 hover:border-white/30',
+                  ].join(' ')}
+                >
+                  {workoutTypeLabel(t)}
+                </button>
+              );
+            })}
           </div>
         </Card>
 
-        <Card>
-          <div className="space-y-4">
-            <div className="text-sm font-semibold">Estrutura</div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-bold mb-3">Estrutura</div>
 
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-4">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold">Aquecimento</div>
-              <label className="inline-flex items-center cursor-pointer">
+              <div className="font-bold">Aquecimento</div>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <span className="text-xs text-slate-400">{includeWarmup ? 'On' : 'Off'}</span>
                 <input
                   type="checkbox"
-                  checked={warmupEnabled}
-                  onChange={(e) => setWarmupEnabled(e.target.checked)}
-                  className="sr-only"
+                  className="accent-primary h-5 w-5"
+                  checked={includeWarmup}
+                  onChange={(e) => setIncludeWarmup(e.target.checked)}
                 />
-                <span
-                  className={`w-12 h-7 rounded-full relative transition ${
-                    warmupEnabled ? 'bg-primary' : 'bg-slate-700'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white transition ${
-                      warmupEnabled ? 'translate-x-5' : ''
-                    }`}
-                  />
-                </span>
               </label>
             </div>
 
-            {warmupEnabled && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Distância</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={warmupDistance}
-                      onChange={(e) => setWarmupDistance(clamp(Number(e.target.value || 0), 0.5, 10))}
-                      className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                    />
-                    <div className="text-sm text-slate-400">km</div>
-                  </div>
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-1">
+                  Distância
                 </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Ritmo</div>
-                  <div className="w-full rounded-xl border border-slate-700 bg-slate-900/20 px-3 py-2 text-sm text-slate-200">
-                    Livre
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
-              <div className="text-sm font-semibold">Desaquecimento</div>
-              <label className="inline-flex items-center cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={cooldownEnabled}
-                  onChange={(e) => setCooldownEnabled(e.target.checked)}
-                  className="sr-only"
-                />
-                <span
-                  className={`w-12 h-7 rounded-full relative transition ${
-                    cooldownEnabled ? 'bg-primary' : 'bg-slate-700'
-                  }`}
-                >
-                  <span
-                    className={`absolute top-1 left-1 w-5 h-5 rounded-full bg-white transition ${
-                      cooldownEnabled ? 'translate-x-5' : ''
-                    }`}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full h-11 px-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60 disabled:opacity-60"
+                    value={warmupKm}
+                    onChange={(e) => setWarmupKm(e.target.value)}
+                    disabled={!includeWarmup}
+                    placeholder="Ex: 2"
                   />
-                </span>
-              </label>
-            </div>
-
-            {cooldownEnabled && (
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Distância</div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.5"
-                      min="0.5"
-                      value={cooldownDistance}
-                      onChange={(e) => setCooldownDistance(clamp(Number(e.target.value || 0), 0.5, 10))}
-                      className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                    />
-                    <div className="text-sm text-slate-400">km</div>
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Ritmo</div>
-                  <div className="w-full rounded-xl border border-slate-700 bg-slate-900/20 px-3 py-2 text-sm text-slate-200">
-                    Livre
-                  </div>
+                  <span className="text-sm text-slate-400">km</span>
                 </div>
               </div>
-            )}
+              <div>
+                <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-1">
+                  Ritmo
+                </div>
+                <select
+                  className="w-full h-11 px-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60 disabled:opacity-60"
+                  value={warmupPace}
+                  onChange={(e) => setWarmupPace(e.target.value as any)}
+                  disabled={!includeWarmup}
+                >
+                  <option value="free">Livre</option>
+                  <option value="p1k">P1K</option>
+                </select>
+              </div>
+            </div>
           </div>
-        </Card>
 
-        {/* BLOCOS PRINCIPAIS */}
-        <Card>
-          <div className="space-y-4">
-            <div className="text-sm font-semibold">Blocos Principais</div>
+          <div className="mb-2 text-[10px] font-bold tracking-widest text-slate-400 uppercase">
+            Blocos principais
+          </div>
 
-            {workoutType === 'rodagem' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          <div className="space-y-3">
+            {blocks.map((b) => (
+              <div key={b.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-1">
                       Distância do trecho
                     </div>
                     <div className="flex items-center gap-2">
                       <input
-                        type="number"
-                        step="0.5"
-                        min="1"
-                        value={easyDistance}
-                        onChange={(e) => setEasyDistance(clamp(Number(e.target.value || 0), 1, 50))}
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                        type="text"
+                        inputMode="decimal"
+                        className="w-full h-12 px-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60"
+                        value={b.distanceKm}
+                        onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
+                        placeholder="Ex: 1"
                       />
-                      <div className="text-sm text-slate-400">km</div>
+                      <span className="text-sm text-slate-400">km</span>
                     </div>
                   </div>
 
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Intensidade</div>
-                    <div className="flex gap-2">
-                      {(['leve', 'moderado', 'forte'] as Intensity[]).map((i) => (
+                  {blocks.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeBlock(b.id)}
+                      className="h-10 w-10 rounded-xl border border-white/10 hover:border-white/30 flex items-center justify-center"
+                      aria-label="Remover bloco"
+                      title="Remover bloco"
+                    >
+                      <span className="material-symbols-outlined text-slate-200">delete</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-2">
+                    Intensidade
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {(['easy', 'moderate', 'hard'] as Intensity[]).map((i) => {
+                      const active = b.intensity === i;
+                      return (
                         <button
                           key={i}
                           type="button"
-                          onClick={() => setDefaultIntensity(i)}
-                          className={`flex-1 rounded-full px-3 py-2 text-xs font-semibold border ${
-                            defaultIntensity === i
-                              ? 'bg-primary text-black border-transparent'
-                              : 'bg-transparent text-white border-slate-700'
-                          }`}
+                          onClick={() => updateBlock(b.id, { intensity: i })}
+                          className={[
+                            'h-11 rounded-full text-xs sm:text-sm font-bold border w-full',
+                            active
+                              ? 'bg-primary text-black border-primary'
+                              : 'bg-transparent text-white border-white/15 hover:border-white/30',
+                          ].join(' ')}
                         >
                           {intensityLabel(i)}
                         </button>
-                      ))}
-                    </div>
-                    <div className="mt-2 text-xs text-slate-400">
-                      Ritmo sugerido: {ranges[defaultIntensity]?.min ?? '--:--'}–{ranges[defaultIntensity]?.max ?? '--:--'} /km
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {workoutType === 'progressivo' && (
-              <div className="space-y-4">
-                {progressionBlocks.map((b) => (
-                  <div key={b.id} className="rounded-2xl border border-slate-800 p-4 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Bloco
-                      </div>
-                      {progressionBlocks.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => removeProgressionBlock(b.id)}
-                          className="text-slate-400 hover:text-red-400"
-                          title="Remover bloco"
-                        >
-                          🗑️
-                        </button>
-                      )}
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Distância</div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="number"
-                            step="0.5"
-                            min="0.5"
-                            value={b.distance_km}
-                            onChange={(e) =>
-                              updateProgressionBlock(b.id, {
-                                distance_km: clamp(Number(e.target.value || 0), 0.5, 50),
-                              })
-                            }
-                            className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                          />
-                          <div className="text-sm text-slate-400">km</div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Intensidade</div>
-                        <div className="flex gap-2">
-                          {(['leve', 'moderado', 'forte'] as Intensity[]).map((i) => (
-                            <button
-                              key={i}
-                              type="button"
-                              onClick={() => updateProgressionBlock(b.id, { intensity: i })}
-                              className={`flex-1 rounded-full px-3 py-2 text-xs font-semibold border ${
-                                b.intensity === i
-                                  ? 'bg-primary text-black border-transparent'
-                                  : 'bg-transparent text-white border-slate-700'
-                              }`}
-                            >
-                              {intensityLabel(i)}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="mt-2 text-xs text-slate-400">
-                          Ritmo sugerido: {ranges[b.intensity]?.min ?? '--:--'}–{ranges[b.intensity]?.max ?? '--:--'} /km
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                <button
-                  type="button"
-                  onClick={addProgressionBlock}
-                  className="w-full rounded-2xl border border-dashed border-slate-700 p-4 text-sm font-semibold text-slate-200 hover:border-slate-500"
-                >
-                  ＋ Adicionar Bloco
-                </button>
-              </div>
-            )}
-
-            {workoutType === 'alternado' && (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Trabalho (FORTE)</div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.2"
-                        value={altWorkDistance}
-                        onChange={(e) => setAltWorkDistance(clamp(Number(e.target.value || 0), 0.2, 10))}
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      />
-                      <div className="text-sm text-slate-400">km</div>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-400">
-                      Ritmo sugerido: {ranges.forte?.min ?? '--:--'}–{ranges.forte?.max ?? '--:--'} /km
-                    </div>
+                      );
+                    })}
                   </div>
 
-                  <div>
-                    <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Recuperação (LEVE)</div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.5"
-                        min="0.2"
-                        value={altRestDistance}
-                        onChange={(e) => setAltRestDistance(clamp(Number(e.target.value || 0), 0.2, 10))}
-                        className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                      />
-                      <div className="text-sm text-slate-400">km</div>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-400">
-                      Ritmo sugerido: {ranges.leve?.min ?? '--:--'}–{ranges.leve?.max ?? '--:--'} /km
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Repetições</div>
-                  <input
-                    type="number"
-                    step="1"
-                    min="1"
-                    value={altReps}
-                    onChange={(e) => setAltReps(clamp(Number(e.target.value || 0), 1, 30))}
-                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                  />
                   <div className="mt-2 text-xs text-slate-400">
-                    Sequência gerada: {altReps}× (FORTE {altWorkDistance} km + LEVE {altRestDistance} km)
+                    Ritmo sugerido:{' '}
+                    {b.intensity === 'easy'
+                      ? '6:00–7:00 /km'
+                      : b.intensity === 'moderate'
+                        ? '5:00–6:00 /km'
+                        : '4:00–5:00 /km'}
                   </div>
                 </div>
+              </div>
+            ))}
+          </div>
 
-                <div className="rounded-xl bg-slate-900/20 border border-slate-800 p-4 text-sm text-slate-200">
-                  <div className="font-semibold mb-1">Dica para o aluno (LEVE)</div>
-                  <div className="text-slate-300">Recupere: respiração controlada, dá pra falar frases.</div>
+          <button
+            type="button"
+            onClick={addBlock}
+            className="mt-3 w-full h-12 rounded-2xl border border-dashed border-white/15 hover:border-white/30 text-sm font-bold flex items-center justify-center gap-2"
+          >
+            <span className="material-symbols-outlined">add</span>
+            Adicionar Bloco
+          </button>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4 mt-5">
+            <div className="flex items-center justify-between">
+              <div className="font-bold">Desaquecimento</div>
+              <label className="inline-flex items-center gap-2 cursor-pointer">
+                <span className="text-xs text-slate-400">{includeCooldown ? 'On' : 'Off'}</span>
+                <input
+                  type="checkbox"
+                  className="accent-primary h-5 w-5"
+                  checked={includeCooldown}
+                  onChange={(e) => setIncludeCooldown(e.target.checked)}
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div>
+                <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-1">
+                  Distância
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    className="w-full h-11 px-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60 disabled:opacity-60"
+                    value={cooldownKm}
+                    onChange={(e) => setCooldownKm(e.target.value)}
+                    disabled={!includeCooldown}
+                    placeholder="Ex: 1"
+                  />
+                  <span className="text-sm text-slate-400">km</span>
                 </div>
               </div>
-            )}
+              <div>
+                <div className="text-[10px] font-bold tracking-widest text-slate-400 uppercase mb-1">
+                  Ritmo
+                </div>
+                <select
+                  className="w-full h-11 px-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60 disabled:opacity-60"
+                  value={cooldownPace}
+                  onChange={(e) => setCooldownPace(e.target.value as any)}
+                  disabled={!includeCooldown}
+                >
+                  <option value="free">Livre</option>
+                  <option value="p1k">P1K</option>
+                </select>
+              </div>
+            </div>
           </div>
         </Card>
 
-        <Card>
-          <div className="space-y-2">
-            <div className="text-sm font-semibold">Observações (opcional)</div>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              rows={3}
-              className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-              placeholder="Ex.: manter técnica, focar em respiração, etc."
-            />
-          </div>
+        <Card className="mb-4 p-4">
+          <div className="text-sm font-bold mb-2">Observações (opcional)</div>
+          <textarea
+            className="w-full min-h-[110px] px-4 py-3 rounded-xl bg-white/5 border border-white/10 outline-none focus:border-primary/60 resize-none"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Ex: Foco em técnica, atenção na cadência, etc."
+          />
         </Card>
       </main>
 
-      {/* Footer actions */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white/80 dark:bg-black/30 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 p-4">
-        <div className="max-w-md mx-auto flex gap-3">
-          <Button onClick={handleSaveDraft} disabled={saving} fullWidth variant="secondary">
+      <div className="fixed bottom-0 left-0 right-0 bg-black/40 backdrop-blur border-t border-white/10 px-4 py-3">
+        <div className="max-w-2xl mx-auto flex gap-3">
+          <Button
+            className="flex-1 h-12 rounded-full"
+            variant="secondary"
+            disabled={saving}
+            onClick={() => upsertWorkout('draft')}
+          >
             {saving ? 'Salvando...' : 'Salvar Rascunho'}
           </Button>
-          <Button onClick={handleShare} disabled={saving} fullWidth>
-            Compartilhar
+
+          <Button className="flex-1 h-12 rounded-full" disabled={saving} onClick={() => upsertWorkout('ready')}>
+            {saving ? 'Salvando...' : 'Compartilhar'}
           </Button>
         </div>
       </div>
-    </>
+    </div>
   );
 }

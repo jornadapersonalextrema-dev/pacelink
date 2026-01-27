@@ -1,0 +1,15 @@
+{
+  "/_global-error/page": "/_global-error",
+  "/_not-found/page": "/_not-found",
+  "/login/page": "/login",
+  "/page": "/",
+  "/signup/page": "/signup",
+  "/students/[id]/page": "/students/[id]",
+  "/students/[id]/workouts/new/page": "/students/[id]/workouts/new",
+  "/students/page": "/students",
+  "/w/[slug]/done/page": "/w/[slug]/done",
+  "/w/[slug]/page": "/w/[slug]",
+  "/w/[slug]/run/page": "/w/[slug]/run",
+  "/workouts/[id]/edit/page": "/workouts/[id]/edit",
+  "/workouts/page": "/workouts"
+}
