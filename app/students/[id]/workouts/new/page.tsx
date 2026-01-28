@@ -14,20 +14,13 @@ import { Icon } from '../../../../../components/Icon';
 // Helpers
 // -------------------------------
 function clampNumber(value: number, min: number, max: number) {
-  if (Number.isNaN(value)) return min;
+  if (!Number.isFinite(value)) return min;
   return Math.min(Math.max(value, min), max);
 }
 
 function parsePtNumber(value: string): number {
-  // Aceita vírgula como separador decimal (pt-BR)
   const normalized = (value ?? '').toString().replace(',', '.');
   return Number(normalized);
-}
-
-function fmtDateBR(dateISO?: string | null) {
-  if (!dateISO) return '';
-  const d = new Date(dateISO);
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
 function formatPaceFromSeconds(sec?: number | null) {
@@ -70,7 +63,7 @@ export default function NewWorkoutPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Editor state
-  const [title, setTitle] = useState(''); // ✅ não preenche automaticamente com Rodagem
+  const [title, setTitle] = useState(''); // não preenche automaticamente
   const [templateType, setTemplateType] = useState<TemplateType>('rodagem');
 
   const [includeWarmup, setIncludeWarmup] = useState(true);
@@ -99,7 +92,6 @@ export default function NewWorkoutPage() {
   const [saving, setSaving] = useState(false);
 
   const [workoutId, setWorkoutId] = useState<string | null>(null);
-  const [shareSlug, setShareSlug] = useState<string | null>(null);
 
   async function ensureAuth() {
     const { data } = await supabase.auth.getUser();
@@ -110,7 +102,11 @@ export default function NewWorkoutPage() {
     return data.user;
   }
 
-  // ✅ Corrige erro "Cannot coerce..." usando maybeSingle() + filtro por trainer logado
+  /**
+   * ✅ FIX PRINCIPAL:
+   * Evita `.single()`/`.maybeSingle()` aqui para não disparar 406/“Cannot coerce…”
+   * Usamos `.limit(1)` e pegamos `data[0]`.
+   */
   useEffect(() => {
     let isMounted = true;
 
@@ -121,27 +117,29 @@ export default function NewWorkoutPage() {
 
         const user = await ensureAuth();
 
-        const { data, error: dbErr } = await supabase
+        const { data: rows, error: dbErr } = await supabase
           .from('students')
-          .select('id, trainer_id, name, email, p1k_sec_per_km, created_at, updated_at')
+          .select('id, trainer_id, name, email, p1k_sec_per_km')
           .eq('id', studentId)
           .eq('trainer_id', user.id)
-          .maybeSingle();
+          .limit(1);
 
         if (dbErr) throw dbErr;
-        if (!data) throw new Error('Aluno não encontrado (ou sem permissão).');
+
+        const row = rows?.[0] ?? null;
+        if (!row) throw new Error('Aluno não encontrado (ou você não tem permissão para acessá-lo).');
 
         if (isMounted) {
           setStudent({
-            id: data.id,
-            trainer_id: data.trainer_id,
-            name: data.name,
-            email: data.email ?? null,
-            p1k_sec_per_km: data.p1k_sec_per_km ?? null,
+            id: row.id,
+            trainer_id: row.trainer_id,
+            name: row.name,
+            email: row.email ?? null,
+            p1k_sec_per_km: row.p1k_sec_per_km ?? null,
           });
         }
       } catch (err: any) {
-        console.error('Error loading student:', err);
+        console.error('Erro ao carregar aluno:', err);
         if (isMounted) setError(err?.message || 'Erro ao carregar aluno.');
       } finally {
         if (isMounted) setLoadingStudent(false);
@@ -152,6 +150,7 @@ export default function NewWorkoutPage() {
     return () => {
       isMounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId]);
 
   const computed = useMemo(() => {
@@ -240,11 +239,11 @@ export default function NewWorkoutPage() {
           .update(payload)
           .eq('id', workoutId)
           .select('id, share_slug')
-          .single();
+          .maybeSingle();
 
         if (dbErr) throw dbErr;
+        if (!data) throw new Error('Não foi possível atualizar o treino (verifique permissões/RLS).');
 
-        setShareSlug(data.share_slug);
         return data;
       } else {
         const { data, error: dbErr } = await supabase
@@ -256,11 +255,10 @@ export default function NewWorkoutPage() {
         if (dbErr) throw dbErr;
 
         setWorkoutId(data.id);
-        setShareSlug(data.share_slug);
         return data;
       }
     } catch (err: any) {
-      console.error('Error saving workout:', err);
+      console.error('Erro ao salvar treino:', err);
       setError(err?.message || 'Erro ao salvar treino.');
       throw err;
     } finally {
@@ -273,10 +271,25 @@ export default function NewWorkoutPage() {
   }
 
   async function handleShare() {
-    const w = await upsertWorkout('published');
+    const w: any = await upsertWorkout('published');
     const url = `${window.location.origin}/w/${w.share_slug}`;
-    await navigator.clipboard.writeText(url);
-    alert('Link copiado! Cole no WhatsApp para enviar ao aluno.');
+
+    // Melhor fallback para mobile
+    try {
+      if ((navigator as any).share) {
+        await (navigator as any).share({ title: 'PaceLink', text: 'Treino', url });
+        return;
+      }
+    } catch (_) {
+      // se usuário cancelar share, cai no fallback abaixo
+    }
+
+    try {
+      await navigator.clipboard.writeText(url);
+      alert('Link copiado! Cole no WhatsApp para enviar ao aluno.');
+    } catch (_) {
+      window.prompt('Copie o link do treino:', url);
+    }
   }
 
   const pillClass = (active: boolean) =>
@@ -319,7 +332,7 @@ export default function NewWorkoutPage() {
 
         <Card>
           <div className="text-base font-bold">Tipo de Treino</div>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex gap-2 flex-wrap">
             <button onClick={() => setTemplateType('rodagem')} className={pillClass(templateType === 'rodagem')}>
               Rodagem
             </button>
@@ -416,12 +429,13 @@ export default function NewWorkoutPage() {
           </Card>
         )}
 
-        {/* Mantive progressivo/alternado como estavam (já funcionando) */}
-        {/* ... */}
-
         <Card>
           <div className="text-base font-bold">Observações (opcional)</div>
-          <Input value={notes} onChange={(e: any) => setNotes(e.target.value)} placeholder="Ex.: Terreno plano, foco em controlar respiração" />
+          <Input
+            value={notes}
+            onChange={(e: any) => setNotes(e.target.value)}
+            placeholder="Ex.: Terreno plano, foco em controlar respiração"
+          />
         </Card>
       </main>
 
