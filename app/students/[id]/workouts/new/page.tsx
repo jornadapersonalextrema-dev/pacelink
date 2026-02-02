@@ -248,7 +248,7 @@ export default function NewWorkoutPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-        <Topbar />
+	<Topbar title="Novo treino" />
         <div className="mx-auto max-w-4xl p-6">Carregando…</div>
       </div>
     );
@@ -256,7 +256,7 @@ export default function NewWorkoutPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-      <Topbar />
+	<Topbar title="Novo treino" />
       <div className="mx-auto max-w-4xl p-6 space-y-6">
         <div className="rounded-3xl bg-surface-dark/70 border border-white/10 p-6">
           <div className="flex items-start justify-between gap-4">
