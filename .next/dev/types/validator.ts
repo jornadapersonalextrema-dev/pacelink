@@ -36,6 +36,24 @@ type LayoutConfig<Route extends LayoutRoutes = LayoutRoutes> = {
 }
 
 
+// Validate ../../../app/aluno/login/page.tsx
+{
+  type __IsExpected<Specific extends AppPageConfig<"/aluno/login">> = Specific
+  const handler = {} as typeof import("../../../app/aluno/login/page.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
+// Validate ../../../app/aluno/page.tsx
+{
+  type __IsExpected<Specific extends AppPageConfig<"/aluno">> = Specific
+  const handler = {} as typeof import("../../../app/aluno/page.js")
+  type __Check = __IsExpected<typeof handler>
+  // @ts-ignore
+  type __Unused = __Check
+}
+
 // Validate ../../../app/login/page.tsx
 {
   type __IsExpected<Specific extends AppPageConfig<"/login">> = Specific
@@ -90,28 +108,10 @@ type LayoutConfig<Route extends LayoutRoutes = LayoutRoutes> = {
   type __Unused = __Check
 }
 
-// Validate ../../../app/w/[slug]/done/page.tsx
+// Validate ../../../app/w/[studentSlug]/[shareSlug]/page.tsx
 {
-  type __IsExpected<Specific extends AppPageConfig<"/w/[slug]/done">> = Specific
-  const handler = {} as typeof import("../../../app/w/[slug]/done/page.js")
-  type __Check = __IsExpected<typeof handler>
-  // @ts-ignore
-  type __Unused = __Check
-}
-
-// Validate ../../../app/w/[slug]/page.tsx
-{
-  type __IsExpected<Specific extends AppPageConfig<"/w/[slug]">> = Specific
-  const handler = {} as typeof import("../../../app/w/[slug]/page.js")
-  type __Check = __IsExpected<typeof handler>
-  // @ts-ignore
-  type __Unused = __Check
-}
-
-// Validate ../../../app/w/[slug]/run/page.tsx
-{
-  type __IsExpected<Specific extends AppPageConfig<"/w/[slug]/run">> = Specific
-  const handler = {} as typeof import("../../../app/w/[slug]/run/page.js")
+  type __IsExpected<Specific extends AppPageConfig<"/w/[studentSlug]/[shareSlug]">> = Specific
+  const handler = {} as typeof import("../../../app/w/[studentSlug]/[shareSlug]/page.js")
   type __Check = __IsExpected<typeof handler>
   // @ts-ignore
   type __Unused = __Check

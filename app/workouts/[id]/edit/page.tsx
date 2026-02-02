@@ -3,119 +3,109 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '../../../../lib/supabaseBrowser';
+import Topbar from '../../../../components/Topbar';
+import Button from '../../../../components/Button';
 
-type DbWorkoutStatus = 'draft' | 'ready' | 'archived';
-type DbTemplateType = 'easy_run' | 'progressive' | 'alternated';
-type UiIntensity = 'leve' | 'moderado' | 'forte';
-
-type Block = {
-  distance_km: number;
-  intensity: UiIntensity;
+type StudentRow = {
+  id: string;
+  name: string;
+  public_slug: string | null;
 };
 
-function clampNumber(n: number, min: number, max?: number) {
-  if (Number.isNaN(n)) return min;
-  if (max !== undefined) return Math.min(Math.max(n, min), max);
-  return Math.max(n, min);
+type WorkoutRow = {
+  id: string;
+  student_id: string;
+  trainer_id: string;
+  status: 'draft' | 'ready' | 'archived';
+  template_type: 'easy_run' | 'progressive' | 'alternated' | string;
+  title: string | null;
+  planned_date: string | null;
+  locked_at: string | null;
+  version: number;
+  created_at: string;
+  include_warmup: boolean;
+  warmup_km: number;
+  include_cooldown: boolean;
+  cooldown_km: number;
+  blocks: any;
+  total_km: number;
+  share_slug: string | null;
+};
+
+type WeekRow = { id: string; week_start: string; week_end: string; label: string | null; };
+
+
+type BlockDraft = {
+  id: string;
+  distanceKm: string;
+  intensity: 'leve' | 'moderado' | 'forte';
+};
+
+const TEMPLATE_LABEL: Record<string, string> = {
+  easy_run: 'Rodagem',
+  progressive: 'Progressivo',
+  alternated: 'Alternado',
+};
+
+function uid() {
+  return Math.random().toString(16).slice(2);
 }
 
-function toNumber(v: unknown, fallback: number) {
-  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-  return Number.isFinite(n) ? n : fallback;
+function slugify(s: string) {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '');
 }
 
-function formatKm(n: number) {
-  const val = Number.isFinite(n) ? n : 0;
-  // evita "12.0000001"
-  return (Math.round(val * 10) / 10).toString().replace('.', ',');
+function makeStudentSlug(name: string, id: string) {
+  const base = slugify(name) || 'aluno';
+  const suffix = (id || '').replace(/-/g, '').slice(0, 6) || '000000';
+  return `${base}-${suffix}`;
 }
 
-function templateLabel(t: DbTemplateType): string {
-  switch (t) {
-    case 'easy_run':
-      return 'Rodagem';
-    case 'progressive':
-      return 'Progressivo';
-    case 'alternated':
-      return 'Alternado';
-    default:
-      return 'Treino';
-  }
+function parseKm(str: string, min: number) {
+  const cleaned = (str || '').replace(',', '.');
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, n);
 }
 
-function statusLabel(s: DbWorkoutStatus): string {
-  switch (s) {
-    case 'draft':
-      return 'Rascunho';
-    case 'ready':
-      return 'Pronto';
-    case 'archived':
-      return 'Arquivado';
-    default:
-      return s;
-  }
-}
-
-function computeTotalKm(params: {
-  includeWarmup: boolean;
-  warmupKm: number;
-  includeCooldown: boolean;
-  cooldownKm: number;
-  blocks: Block[];
-}) {
-  const warm = params.includeWarmup ? params.warmupKm : 0;
-  const cool = params.includeCooldown ? params.cooldownKm : 0;
-  const blocks = (params.blocks || []).reduce((acc, b) => acc + (Number.isFinite(b.distance_km) ? b.distance_km : 0), 0);
-  return Math.round((warm + blocks + cool) * 100) / 100;
-}
-
-function normalizeBlocks(raw: any): Block[] {
-  if (!Array.isArray(raw)) return [];
-  return raw
-    .map((b) => {
-      const distance =
-        toNumber(b?.distance_km, NaN) ??
-        toNumber(b?.distanceKm, NaN) ??
-        toNumber(b?.km, NaN);
-
-      const intensityRaw = (b?.intensity ?? b?.intensidade ?? '').toString().toLowerCase();
-      const intensity: UiIntensity =
-        intensityRaw === 'forte' ? 'forte' : intensityRaw === 'moderado' ? 'moderado' : 'leve';
-
-      return {
-        distance_km: Number.isFinite(distance) ? distance : 1,
-        intensity,
-      } as Block;
-    })
-    .filter((b) => Number.isFinite(b.distance_km) && b.distance_km > 0);
+function Card({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-2xl border border-white/10 bg-white/5 p-4">{children}</div>;
 }
 
 export default function EditWorkoutPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
-  const workoutId = params?.id;
+  const workoutId = params.id;
+
+  const supabase = useMemo(() => createClient(), []);
 
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
-  const [status, setStatus] = useState<DbWorkoutStatus>('draft');
-  const [templateType, setTemplateType] = useState<DbTemplateType>('easy_run');
-  const [title, setTitle] = useState<string>('');
+  const [student, setStudent] = useState<StudentRow | null>(null);
+  const [week, setWeek] = useState<WeekRow | null>(null);
+  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
+
+  const [title, setTitle] = useState('');
+  const [plannedDate, setPlannedDate] = useState<string>('');
+  const [isLocked, setIsLocked] = useState(false);
+
+  const [templateType, setTemplateType] = useState<'easy_run' | 'progressive' | 'alternated'>('easy_run');
 
   const [includeWarmup, setIncludeWarmup] = useState(true);
-  const [warmupKm, setWarmupKm] = useState<number>(1);
+  const [warmupKm, setWarmupKm] = useState('2');
 
   const [includeCooldown, setIncludeCooldown] = useState(true);
-  const [cooldownKm, setCooldownKm] = useState<number>(1);
+  const [cooldownKm, setCooldownKm] = useState('1');
 
-  const [blocks, setBlocks] = useState<Block[]>([{ distance_km: 5, intensity: 'leve' }]);
-  const totalKm = useMemo(() => computeTotalKm({ includeWarmup, warmupKm, includeCooldown, cooldownKm, blocks }), [
-    includeWarmup,
-    warmupKm,
-    includeCooldown,
-    cooldownKm,
-    blocks,
-  ]);
+  const [blocks, setBlocks] = useState<BlockDraft[]>([]);
 
   useEffect(() => {
     let alive = true;
@@ -124,431 +114,391 @@ export default function EditWorkoutPage() {
       setLoading(true);
       setBanner(null);
 
-      try {
-        const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
 
-        const { data, error } = await supabase
-          .from('workouts')
-          .select(
-            'id, status, template_type, title, include_warmup, warmup_km, include_cooldown, cooldown_km, blocks, total_km, share_slug, created_at, student_id'
-          )
-          .eq('id', workoutId)
-          .maybeSingle();
-
-        if (!alive) return;
-
-        if (error) throw error;
-        if (!data) {
-          setBanner('Treino não encontrado (ou sem permissão).');
-          setLoading(false);
-          return;
-        }
-
-        setStatus((data.status as DbWorkoutStatus) ?? 'draft');
-        setTemplateType((data.template_type as DbTemplateType) ?? 'easy_run');
-        setTitle((data.title as string) ?? '');
-
-        setIncludeWarmup(Boolean(data.include_warmup));
-        setWarmupKm(clampNumber(toNumber(data.warmup_km, 1), 0.1));
-
-        setIncludeCooldown(Boolean(data.include_cooldown));
-        setCooldownKm(clampNumber(toNumber(data.cooldown_km, 1), 0.1));
-
-        setBlocks(normalizeBlocks(data.blocks));
-      } catch (e: any) {
-        setBanner(e?.message ? `Erro ao carregar treino: ${e.message}` : 'Erro ao carregar treino.');
-      } finally {
-        if (alive) setLoading(false);
-      }
-    }
-
-    if (workoutId) load();
-    return () => {
-      alive = false;
-    };
-  }, [workoutId]);
-
-  async function saveChanges() {
-    setBanner(null);
-    try {
-      const supabase = createClient();
-
-      // constraints: warmup_km/cooldown_km precisam ser > 0, mesmo se include_* = false
-      const safeWarm = clampNumber(warmupKm, 0.1);
-      const safeCool = clampNumber(cooldownKm, 0.1);
-
-      const payload = {
-        title: title.trim() ? title.trim() : null,
-        status, // deve ser 'draft' | 'ready' | 'archived'
-        template_type: templateType, // 'easy_run' | 'progressive' | 'alternated'
-        include_warmup: includeWarmup,
-        warmup_km: safeWarm,
-        include_cooldown: includeCooldown,
-        cooldown_km: safeCool,
-        blocks,
-        total_km: computeTotalKm({
-          includeWarmup,
-          warmupKm: safeWarm,
-          includeCooldown,
-          cooldownKm: safeCool,
-          blocks,
-        }),
-      };
-
-      const { error } = await supabase.from('workouts').update(payload).eq('id', workoutId);
-      if (error) throw error;
-
-      setBanner('Alterações salvas com sucesso.');
-      setTimeout(() => setBanner(null), 1500);
-    } catch (e: any) {
-      setBanner(e?.message ? `Erro ao salvar: ${e.message}` : 'Erro ao salvar.');
-    }
-  }
-
-  async function ensureShareLinkAndCopy() {
-    setBanner(null);
-    try {
-      const supabase = createClient();
-
-      // Para gerar share_slug, o trigger roda ao atualizar status (coluna status).
-      // IMPORTANTE: status permitido pelo constraint é: 'draft' | 'ready' | 'archived'
-      const { data, error } = await supabase
-        .from('workouts')
-        .update({ status: 'ready' })
-        .eq('id', workoutId)
-        .select('id, share_slug, status')
-        .single();
-
-      if (error) throw error;
-
-      const slug = data?.share_slug;
-      if (!slug) {
-        setBanner('Não foi possível gerar o link (share_slug vazio).');
+      if (!user) {
+        const next = window.location.pathname + window.location.search;
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
         return;
       }
 
-      const url = `${window.location.origin}/w/${slug}`;
+      const { data: ww, error: wErr } = await supabase
+        .from('workouts')
+        .select(
+          'id,student_id,trainer_id,status,template_type,title,planned_date,locked_at,version,created_at,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,share_slug'
+        )
+        .eq('id', workoutId)
+        .maybeSingle();
 
-      try {
-        await navigator.clipboard.writeText(url);
-        setBanner('Link do aluno copiado para a área de transferência.');
-      } catch {
-        // fallback
-        window.prompt('Copie o link abaixo:', url);
-        setBanner('Link gerado. Copie manualmente.');
+      if (!alive) return;
+
+      if (wErr) {
+        setBanner(wErr.message);
+        setLoading(false);
+        return;
       }
-    } catch (e: any) {
-      setBanner(e?.message ? `Erro ao gerar link: ${e.message}` : 'Erro ao gerar link.');
+
+      if (!ww) {
+        setBanner('Treino não encontrado (ou sem permissão).');
+        setLoading(false);
+        return;
+      }
+
+      setWorkout(ww as WorkoutRow);
+
+// Carrega semana (se existir)
+if ((ww as any)?.week_id) {
+  const { data: wk } = await supabase
+    .from('weeks')
+    .select('id, week_start, week_end, label')
+    .eq('id', (ww as any).week_id)
+    .maybeSingle();
+  setWeek((wk as any) || null);
+} else {
+  setWeek(null);
+}
+
+      setTitle(ww.title ?? '');
+      setPlannedDate(ww.planned_date ?? '');
+      setTemplateType((ww.template_type as any) ?? 'easy_run');
+
+      setIncludeWarmup(!!ww.include_warmup);
+      setWarmupKm(String(ww.warmup_km ?? '2'));
+
+      setIncludeCooldown(!!ww.include_cooldown);
+      setCooldownKm(String(ww.cooldown_km ?? '1'));
+
+      const rawBlocks = Array.isArray(ww.blocks) ? ww.blocks : [];
+      const drafts: BlockDraft[] = rawBlocks.map((b: any) => ({
+        id: uid(),
+        distanceKm: String(b.distance_km ?? b.distanceKm ?? b.km ?? '1'),
+        intensity: (b.intensity ?? 'moderado') as any,
+      }));
+      setBlocks(drafts.length ? drafts : [{ id: uid(), distanceKm: '6', intensity: 'leve' }]);
+
+      // carrega aluno
+      const { data: st, error: stErr } = await supabase
+        .from('students')
+        .select('id,name,public_slug')
+        .eq('id', ww.student_id)
+        .maybeSingle();
+
+      if (stErr) {
+        setBanner(stErr.message);
+        setLoading(false);
+        return;
+      }
+
+      setStudent(st as StudentRow);
+
+      // Se já existe execução para este treino, bloqueia edição
+      const { count: execCount } = await supabase
+        .from('executions')
+        .select('id', { count: 'exact', head: true })
+        .eq('workout_id', workoutId);
+
+      setIsLocked(!!ww.locked_at || (execCount ?? 0) > 0);
+
+      setLoading(false);
     }
+
+    void load();
+
+    return () => {
+      alive = false;
+    };
+  }, [router, supabase, workoutId]);
+
+  function normalizedWarmup() {
+    if (!includeWarmup) return 1;
+    return parseKm(warmupKm, 0.5);
   }
 
-  function updateBlock(idx: number, patch: Partial<Block>) {
-    setBlocks((prev) => prev.map((b, i) => (i === idx ? { ...b, ...patch } : b)));
+  function normalizedCooldown() {
+    if (!includeCooldown) return 1;
+    return parseKm(cooldownKm, 0.5);
   }
 
-  function removeBlock(idx: number) {
-    setBlocks((prev) => prev.filter((_, i) => i !== idx));
+  function buildBlocksPayload() {
+    return blocks.map((b, idx) => ({
+      index: idx + 1,
+      distance_km: parseKm(b.distanceKm, 0.5),
+      intensity: b.intensity,
+    }));
+  }
+
+  function totalKmEstimate() {
+    const warm = includeWarmup ? normalizedWarmup() : 0;
+    const cool = includeCooldown ? normalizedCooldown() : 0;
+    const sumBlocks = buildBlocksPayload().reduce((acc, x) => acc + (x.distance_km || 0), 0);
+    return Math.round((warm + sumBlocks + cool) * 10) / 10;
   }
 
   function addBlock() {
-    setBlocks((prev) => [...prev, { distance_km: 1, intensity: 'leve' }]);
+    setBlocks((prev) => [...prev, { id: uid(), distanceKm: '1', intensity: 'moderado' }]);
+  }
+
+  function removeBlock(id: string) {
+    setBlocks((prev) => prev.filter((x) => x.id !== id));
+  }
+
+  function updateBlock(id: string, patch: Partial<BlockDraft>) {
+    setBlocks((prev) => prev.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  }
+
+  async function save() {
+    if (!workout) return;
+    setSaving(true);
+    setBanner(null);
+
+    if (isLocked) {
+      setBanner('Este treino já foi iniciado pelo aluno e não pode mais ser editado.');
+      setSaving(false);
+      return;
+    }
+
+    try {
+      const payload: any = {
+        status: workout.status,
+        planned_date: plannedDate ? plannedDate : null,
+        template_type: templateType,
+        title: title.trim() || null,
+        include_warmup: includeWarmup,
+        warmup_km: normalizedWarmup(),
+        include_cooldown: includeCooldown,
+        cooldown_km: normalizedCooldown(),
+        blocks: buildBlocksPayload(),
+        total_km: totalKmEstimate(),
+      };
+
+      const { error } = await supabase.from('workouts').update(payload).eq('id', workout.id);
+
+      if (error) throw error;
+
+      setBanner('Salvo!');
+      router.refresh();
+    } catch (e: any) {
+      setBanner(e?.message ? `Erro: ${e.message}` : 'Erro ao salvar.');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function copyLink() {
+    if (!workout || !student) return;
+    setBanner(null);
+
+    const { data, error } = await supabase
+      .from('workouts')
+      .update({ status: 'ready' })
+      .eq('id', workout.id)
+      .select('id,share_slug')
+      .maybeSingle();
+
+    if (error) {
+      setBanner(error.message);
+      return;
+    }
+
+    const slug = data?.share_slug;
+    if (!slug) {
+      setBanner('share_slug vazio (trigger não gerou).');
+      return;
+    }
+
+    const studentSlug = student.public_slug || makeStudentSlug(student.name, student.id);
+    const url = `${window.location.origin}/w/${studentSlug}/${slug}`;
+
+    try {
+      await navigator.clipboard.writeText(url);
+      setBanner('Link copiado!');
+    } catch {
+      setBanner(`Link: ${url}`);
+    }
   }
 
   return (
-    <div className="min-h-screen bg-[#0b1d16] text-white">
-      {/* Topbar local (evita dependência) */}
-      <div className="sticky top-0 z-10 bg-[#d7dbd9] text-[#0b1d16]">
-        <div className="mx-auto flex max-w-[820px] items-center gap-3 px-4 py-3">
-          <button
-            onClick={() => router.back()}
-            className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-black/10"
-            aria-label="Voltar"
-            title="Voltar"
-          >
-            {/* ícone seta */}
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
-          <div className="flex-1 text-center text-lg font-semibold">Editar Treino</div>
-
-          <button
-            onClick={ensureShareLinkAndCopy}
-            className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-black/10"
-            aria-label="Copiar link do aluno"
-            title="Copiar link do aluno"
-          >
-            {/* ícone compartilhar */}
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M16 8a3 3 0 10-2.83-4H13a3 3 0 003 3zM6 14a3 3 0 10.17 0H6zm10 6a3 3 0 10-2.83-4H13a3 3 0 003 3z"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-              <path d="M8.7 13.1l6.6 3.8M15.3 7.1L8.7 10.9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      <div className="mx-auto max-w-[820px] px-4 pb-24 pt-6">
-        {banner ? (
-          <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-red-100">{banner}</div>
+    <>
+      <Topbar title="Editar treino" />
+      <main className="flex-1 p-4">
+        {loading ? (
+          <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
+        ) : banner ? (
+          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-4 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
         ) : null}
 
-        {loading ? (
-          <div className="opacity-80">Carregando...</div>
-        ) : (
-          <div className="space-y-4">
-            {/* Informações básicas */}
-            <div className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-              <div className="text-xs tracking-widest text-white/60">INFORMAÇÕES BÁSICAS</div>
-
-              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
-                <div className="md:col-span-2">
-                  <label className="mb-2 block text-sm font-semibold">Título do treino</label>
-                  <input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Ex.: Rodagem leve"
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-white/40 outline-none focus:border-white/25"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-2 block text-sm font-semibold">Status</label>
-                  <select
-                    value={status}
-                    onChange={(e) => setStatus(e.target.value as DbWorkoutStatus)}
-                    className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/25"
-                  >
-                    <option value="draft">Rascunho</option>
-                    <option value="ready">Pronto</option>
-                    <option value="archived">Arquivado</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                <label className="mb-2 block text-sm font-semibold">Tipo de treino</label>
-                <div className="flex flex-wrap gap-2">
-                  {(['easy_run', 'progressive', 'alternated'] as DbTemplateType[]).map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setTemplateType(t)}
-                      className={[
-                        'rounded-full px-4 py-2 text-sm font-semibold ring-1 ring-white/10',
-                        templateType === t ? 'bg-[#2CEB79] text-[#0b1d16]' : 'bg-white/5 text-white/80 hover:bg-white/10',
-                      ].join(' ')}
-                    >
-                      {templateLabel(t)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
+        {workout && student ? (
+          <div className="mx-auto max-w-3xl space-y-4">
+            <Card>
+              <div className="text-white/70 text-sm">Aluno</div>
+              <div className="text-white text-xl font-semibold">{student.name}</div>
               <div className="mt-3 text-sm text-white/70">
-                <span className="font-semibold">Distância total estimada:</span> {formatKm(totalKm)} km
+                Template: <span className="font-semibold text-white">{TEMPLATE_LABEL[workout.template_type] ?? workout.template_type}</span>
               </div>
-            </div>
 
-            {/* Estrutura */}
-            <div className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-              <div className="text-lg font-semibold">Estrutura</div>
+<div className="mt-1 text-sm text-white/70">
+  Semana planejada:{' '}
+  <span className="font-semibold text-white">
+    {week ? (week.label || `${new Date(week.week_start).toLocaleDateString('pt-BR')} – ${new Date(week.week_end).toLocaleDateString('pt-BR')}`) : '—'}
+  </span>
+</div>
 
-              {/* Aquecimento */}
-              <div className="mt-4 rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold">Aquecimento</span>
-                  </div>
+              <div className="mt-1 text-sm text-white/70">
+                Distância total estimada: <span className="font-semibold text-white">{totalKmEstimate()} km</span>
+              </div>
 
-                  <button
-                    onClick={() => setIncludeWarmup((v) => !v)}
-                    className={[
-                      'relative h-8 w-14 rounded-full ring-1 ring-white/10 transition',
-                      includeWarmup ? 'bg-[#2CEB79]' : 'bg-white/10',
-                    ].join(' ')}
-                    aria-label="Incluir aquecimento"
-                    title="Incluir aquecimento"
-                  >
-                    <span
-                      className={[
-                        'absolute top-1 h-6 w-6 rounded-full bg-white transition',
-                        includeWarmup ? 'left-7' : 'left-1',
-                      ].join(' ')}
-                    />
-                  </button>
+              {isLocked ? (
+                <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-200">
+                  Este treino já foi iniciado pelo aluno e está <span className="font-semibold">bloqueado para edição</span>.
                 </div>
+              ) : null}
+            </Card>
 
-                <div className="mt-4 grid grid-cols-3 gap-3">
-                  <div className="col-span-2">
-                    <div className="text-xs tracking-widest text-white/60">DISTÂNCIA</div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0.1"
-                        value={warmupKm}
-                        onChange={(e) => setWarmupKm(clampNumber(Number(e.target.value), 0.1))}
-                        className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/25"
-                      />
-                      <span className="text-white/70">km</span>
+            <Card>
+              <div className="font-semibold text-white">Título</div>
+              <input
+                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                value={title}
+                disabled={isLocked}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Ex: Rodagem leve"
+              />
+            </Card>
+
+            <Card>
+              <div className="font-semibold text-white">Data planejada (opcional)</div>
+              <input
+                type="date"
+                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                value={plannedDate}
+                onChange={(e) => setPlannedDate(e.target.value)}
+                disabled={isLocked}
+              />
+            </Card>
+
+            <Card>
+              <div className="font-semibold text-white">Template</div>
+              <select
+                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                value={templateType}
+                disabled={isLocked}
+                onChange={(e) => setTemplateType(e.target.value as any)}
+              >
+                <option value="easy_run">Rodagem</option>
+                <option value="progressive">Progressivo</option>
+                <option value="alternated">Alternado</option>
+              </select>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-white">Aquecimento</div>
+                <label className="inline-flex items-center gap-2 text-sm text-white/80">
+                  <input type="checkbox" checked={includeWarmup} onChange={() => !isLocked && setIncludeWarmup((v) => !v)} />
+                  Incluir
+                </label>
+              </div>
+
+              <input
+                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                value={warmupKm}
+                onChange={(e) => setWarmupKm(e.target.value)}
+                disabled={!includeWarmup || isLocked}
+                inputMode="decimal"
+              />
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-white">Blocos</div>
+                <button className="text-sm underline text-white/80" onClick={() => !isLocked && addBlock()}>
+                  + Adicionar bloco
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-3">
+                {blocks.map((b, idx) => (
+                  <div key={b.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-white font-medium">Bloco {idx + 1}</div>
+                      {blocks.length > 1 ? (
+                        <button className="text-sm underline text-red-300" onClick={() => !isLocked && removeBlock(b.id)}>
+                          Remover
+                        </button>
+                      ) : null}
                     </div>
-                  </div>
 
-                  <div>
-                    <div className="text-xs tracking-widest text-white/60">RITMO</div>
-                    <div className="mt-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white/80">Livre</div>
-                  </div>
-                </div>
-              </div>
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-sm text-white/70">Distância (km)</div>
+                        <input
+                          className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                          value={b.distanceKm}
+                          onChange={(e) => !isLocked && updateBlock(b.id, { distanceKm: e.target.value })}
+                          inputMode="decimal"
+                          disabled={isLocked}
+                        />
+                      </div>
 
-              {/* Blocos principais */}
-              <div className="mt-4">
-                <div className="text-xs tracking-widest text-white/60">BLOCOS PRINCIPAIS</div>
-
-                <div className="mt-3 space-y-3">
-                  {blocks.map((b, idx) => (
-                    <div key={idx} className="rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1">
-                          <div className="text-xs tracking-widest text-white/60">DISTÂNCIA DO TRECHO</div>
-                          <div className="mt-2 flex items-center gap-2">
-                            <input
-                              type="number"
-                              step="0.1"
-                              min="0.1"
-                              value={b.distance_km}
-                              onChange={(e) =>
-                                updateBlock(idx, {
-                                  distance_km: clampNumber(Number(e.target.value), 0.1),
-                                })
-                              }
-                              className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/25"
-                            />
-                            <span className="text-white/70">km</span>
-                          </div>
-
-                          <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                            <div>
-                              <div className="text-xs tracking-widest text-white/60">INTENSIDADE</div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {(['leve', 'moderado', 'forte'] as UiIntensity[]).map((it) => (
-                                  <button
-                                    key={it}
-                                    onClick={() => updateBlock(idx, { intensity: it })}
-                                    className={[
-                                      'rounded-full px-4 py-2 text-sm font-semibold ring-1 ring-white/10',
-                                      b.intensity === it
-                                        ? 'bg-[#2CEB79] text-[#0b1d16]'
-                                        : 'bg-white/5 text-white/80 hover:bg-white/10',
-                                    ].join(' ')}
-                                  >
-                                    {it === 'leve' ? 'Leve' : it === 'moderado' ? 'Moderado' : 'Forte'}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            <div className="flex items-end justify-end">
-                              <button
-                                onClick={() => removeBlock(idx)}
-                                className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/20"
-                                title="Remover bloco"
-                              >
-                                Remover
-                              </button>
-                            </div>
-                          </div>
+                      <div>
+                        <div className="text-sm text-white/70">Intensidade</div>
+                        <div className="mt-2 flex gap-2">
+                          {(['leve', 'moderado', 'forte'] as const).map((opt) => (
+                            <button
+                              key={opt}
+                              type="button"
+                              disabled={isLocked}
+                              onClick={() => !isLocked && updateBlock(b.id, { intensity: opt })}
+                              className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap disabled:opacity-60 ${
+                                b.intensity === opt ? 'bg-[#2ef57f] text-slate-900' : 'bg-white/10 text-white'
+                              }`}
+                            >
+                              {opt === 'leve' ? 'Leve' : opt === 'moderado' ? 'Moderado' : 'Forte'}
+                            </button>
+                          ))}
                         </div>
                       </div>
                     </div>
-                  ))}
-
-                  <button
-                    onClick={addBlock}
-                    className="w-full rounded-2xl border border-dashed border-white/20 bg-white/5 px-4 py-4 text-center text-sm font-semibold text-white/80 hover:bg-white/10"
-                  >
-                    + Adicionar bloco
-                  </button>
-                </div>
-              </div>
-
-              {/* Desaquecimento */}
-              <div className="mt-4 rounded-2xl bg-white/5 p-4 ring-1 ring-white/10">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold">Desaquecimento</div>
-
-                  <button
-                    onClick={() => setIncludeCooldown((v) => !v)}
-                    className={[
-                      'relative h-8 w-14 rounded-full ring-1 ring-white/10 transition',
-                      includeCooldown ? 'bg-[#2CEB79]' : 'bg-white/10',
-                    ].join(' ')}
-                    aria-label="Incluir desaquecimento"
-                    title="Incluir desaquecimento"
-                  >
-                    <span
-                      className={[
-                        'absolute top-1 h-6 w-6 rounded-full bg-white transition',
-                        includeCooldown ? 'left-7' : 'left-1',
-                      ].join(' ')}
-                    />
-                  </button>
-                </div>
-
-                <div className="mt-4 grid grid-cols-3 gap-3">
-                  <div className="col-span-2">
-                    <div className="text-xs tracking-widest text-white/60">DISTÂNCIA</div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <input
-                        type="number"
-                        step="0.1"
-                        min="0.1"
-                        value={cooldownKm}
-                        onChange={(e) => setCooldownKm(clampNumber(Number(e.target.value), 0.1))}
-                        className="w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white outline-none focus:border-white/25"
-                      />
-                      <span className="text-white/70">km</span>
-                    </div>
                   </div>
-
-                  <div>
-                    <div className="text-xs tracking-widest text-white/60">RITMO</div>
-                    <div className="mt-2 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white/80">Livre</div>
-                  </div>
-                </div>
+                ))}
               </div>
-            </div>
+            </Card>
 
-            {/* Ações */}
-            <div className="fixed bottom-0 left-0 right-0 bg-[#0b1d16]/90 backdrop-blur">
-              <div className="mx-auto flex max-w-[820px] gap-3 px-4 py-4">
-                <button
-                  onClick={saveChanges}
-                  className="flex-1 rounded-full bg-[#2CEB79] px-6 py-4 text-center text-base font-bold text-[#0b1d16] hover:brightness-105"
-                >
-                  ✓ Salvar Alterações
-                </button>
-                <button
-                  onClick={ensureShareLinkAndCopy}
-                  className="flex-1 rounded-full bg-white/10 px-6 py-4 text-center text-base font-bold text-white hover:bg-white/15"
-                >
-                  Copiar link do aluno
-                </button>
+            <Card>
+              <div className="flex items-center justify-between">
+                <div className="font-semibold text-white">Desaquecimento</div>
+                <label className="inline-flex items-center gap-2 text-sm text-white/80">
+                  <input type="checkbox" checked={includeCooldown} onChange={() => !isLocked && setIncludeCooldown((v) => !v)} />
+                  Incluir
+                </label>
               </div>
+
+              <input
+                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                value={cooldownKm}
+                onChange={(e) => setCooldownKm(e.target.value)}
+                disabled={!includeCooldown || isLocked}
+                inputMode="decimal"
+              />
+            </Card>
+
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Button onClick={save} disabled={saving || isLocked} fullWidth>
+                Salvar alterações
+              </Button>
+              <Button onClick={copyLink} disabled={saving} fullWidth>
+                Copiar link do aluno
+              </Button>
             </div>
 
-            {/* Debug/info */}
-            <div className="pt-2 text-xs text-white/40">
-              Status atual: <span className="font-semibold text-white/60">{statusLabel(status)}</span>
-            </div>
+            <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.push(`/students/${workout.student_id}`)}>
+              Voltar para o aluno
+            </button>
           </div>
-        )}
-      </div>
-    </div>
+        ) : null}
+      </main>
+    </>
   );
 }
