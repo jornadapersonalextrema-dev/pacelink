@@ -19,7 +19,7 @@ type WeekRow = {
   student_id: string;
   trainer_id: string;
   week_start: string; // YYYY-MM-DD
-  week_end: string;   // YYYY-MM-DD
+  week_end: string | null;
   label: string | null;
 };
 
@@ -27,167 +27,155 @@ type WorkoutRow = {
   id: string;
   student_id: string;
   trainer_id: string;
+  week_id: string | null;
   status: 'draft' | 'ready' | 'archived';
-  template_type: string;
+  template_type: string | null;
   title: string | null;
   total_km: number | null;
-  created_at: string;
   planned_date: string | null;
   planned_day: number | null;
+  created_at: string | null;
   share_slug: string | null;
-  week_id: string | null;
   locked_at: string | null;
-  closed_reason?: string | null;
+  closed_reason: string | null;
 };
 
 type ExecutionRow = {
   id: string;
   workout_id: string;
-  status: 'in_progress' | 'completed';
-  performed_at: string | null;
+  status: string;
+  started_at: string | null;
+  last_event_at: string | null;
   completed_at: string | null;
+  performed_at: string | null;
+  total_elapsed_ms: number | null;
   rpe: number | null;
   comment: string | null;
-  last_event_at: string | null;
-  started_at: string | null;
+  actual_total_km: number | null;
 };
-
-const TEMPLATE_LABEL: Record<string, string> = {
-  easy_run: 'Rodagem',
-  progressive: 'Progressivo',
-  alternated: 'Alternado',
-};
-
-function formatPace(secPerKm: number | null) {
-  if (!secPerKm || secPerKm <= 0) return '—';
-  const m = Math.floor(secPerKm / 60);
-  const s = secPerKm % 60;
-  return `${m}:${String(s).padStart(2, '0')}/km`;
-}
-
-function formatDateBRLoose(iso: string | null) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-}
-
-function formatRangeBR(weekStartISO: string, weekEndISO: string) {
-  return `${formatDateBRLoose(weekStartISO)} – ${formatDateBRLoose(weekEndISO)}`;
-}
-
-function statusLabel(status: WorkoutRow['status'], closedReason?: string | null) {
-  if (status === 'draft') return 'Rascunho';
-  if (status === 'ready') return 'Disponível';
-  if (status === 'archived') {
-    if (closedReason === 'week_expired') return 'Encerrado (sem execução)';
-    return 'Encerrado';
-  }
-  return status;
-}
-
-function kmLabel(km: number | null) {
-  if (km == null) return '—';
-  return Number(km).toFixed(1).replace('.', ',');
-}
-
-function pad2(n: number) {
-  return String(n).padStart(2, '0');
-}
-
-function toISODate(d: Date) {
-  // YYYY-MM-DD in local time (avoid timezone shifting from toISOString)
-  const y = d.getFullYear();
-  const m = pad2(d.getMonth() + 1);
-  const day = pad2(d.getDate());
-  return `${y}-${m}-${day}`;
-}
 
 function startOfWeekMonday(date: Date) {
   const d = new Date(date);
-  const day = d.getDay(); // 0 Sun ... 6 Sat
-  const diff = (day === 0 ? -6 : 1 - day); // Monday start
+  const day = d.getDay(); // 0..6 (Sun..Sat)
+  const diff = (day === 0 ? -6 : 1) - day; // move to Monday
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
 }
 
-function addDays(date: Date, days: number) {
-  const d = new Date(date);
-  d.setDate(d.getDate() + days);
-  return d;
+function toISODate(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
 }
 
-export default function StudentProfilePage() {
-  const params = useParams();
-  const router = useRouter();
-  const supabase = useMemo(() => createClient(), []);
+function addDays(d: Date, days: number) {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+}
 
-  const studentId = String((params as any)?.id || '');
+function formatWeekLabel(weekStartISO: string) {
+  // "Semana dd/mm - dd/mm"
+  const [y, m, d] = weekStartISO.split('-');
+  const start = new Date(Number(y), Number(m) - 1, Number(d));
+  const end = addDays(start, 6);
+  const dd1 = String(start.getDate()).padStart(2, '0');
+  const mm1 = String(start.getMonth() + 1).padStart(2, '0');
+  const dd2 = String(end.getDate()).padStart(2, '0');
+  const mm2 = String(end.getMonth() + 1).padStart(2, '0');
+  return `Semana ${dd1}/${mm1} – ${dd2}/${mm2}`;
+}
+
+function formatPace(secPerKm: number | null) {
+  if (!secPerKm || !Number.isFinite(secPerKm)) return '—';
+  const mm = Math.floor(secPerKm / 60);
+  const ss = Math.round(secPerKm % 60);
+  return `${mm}:${String(ss).padStart(2, '0')}/km`;
+}
+
+function formatKm(n: number | null) {
+  if (n == null || !Number.isFinite(n)) return '—';
+  return `${String(n).replace('.', ',')} km`;
+}
+
+function formatDateBR(dateStr?: string | null) {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return dateStr;
+  const [y, m, d] = parts;
+  return `${d}/${m}/${y}`;
+}
+
+export default function StudentTrainerPage() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const studentId = params.id;
+
+  const supabase = useMemo(() => createClient(), []);
+  const [banner, setBanner] = useState<string | null>(null);
+
   const [student, setStudent] = useState<StudentRow | null>(null);
-  const [studentSlug, setStudentSlug] = useState<string>('aluno');
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
 
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
-  const [loading, setLoading] = useState(true);
-  const [banner, setBanner] = useState<string | null>(null);
+
+  const studentSlug = student?.public_slug ?? 'aluno';
 
   async function loadStudent() {
-    setLoading(true);
     setBanner(null);
-
-    const { data: s, error } = await supabase
+    const { data, error } = await supabase
       .from('students')
-      .select('id, trainer_id, name, email, p1k_sec_per_km, public_slug, created_at')
+      .select('id,trainer_id,name,email,p1k_sec_per_km,public_slug,created_at')
       .eq('id', studentId)
       .maybeSingle();
 
     if (error) {
       setBanner(error.message);
-      setLoading(false);
       return;
     }
 
-    if (!s) {
+    if (!data) {
       setBanner('Aluno não encontrado.');
-      setLoading(false);
       return;
     }
 
-    setStudent(s as StudentRow);
-    setStudentSlug(((s as any).public_slug as string) || 'aluno');
-
-    setLoading(false);
+    setStudent(data as any);
   }
 
   async function ensureUpcomingWeeks(s: StudentRow) {
-    // cria/garante semanas: semana atual + próximas 7 (ajuste se quiser mais)
-    const base = startOfWeekMonday(new Date());
-    const targets = Array.from({ length: 8 }).map((_, i) => {
-      const ws = addDays(base, i * 7);
-      const we = addDays(ws, 6);
-      return {
-        student_id: s.id,
-        trainer_id: s.trainer_id,
-        week_start: toISODate(ws),
-        week_end: toISODate(we),
-        label: `Semana ${formatRangeBR(toISODate(ws), toISODate(we))}`,
-      };
+    // garante que as próximas semanas existam na tabela training_weeks
+    setBanner(null);
+
+    const start = startOfWeekMonday(new Date());
+    const starts = Array.from({ length: 6 }).map((_, i) => toISODate(addDays(start, i * 7)));
+
+    // upsert: (student_id, week_start) unique
+    const payload = starts.map((ws) => ({
+      student_id: s.id,
+      trainer_id: s.trainer_id,
+      week_start: ws,
+      week_end: toISODate(addDays(new Date(ws), 6)),
+      label: formatWeekLabel(ws),
+    }));
+
+    // Table real: training_weeks
+    const { error: upErr } = await supabase.from('training_weeks').upsert(payload, {
+      onConflict: 'student_id,week_start',
     });
 
-    // upsert exige unique(student_id, week_start)
-    const up = await supabase.from('weeks').upsert(targets as any, { onConflict: 'student_id,week_start' });
-    if (up.error) {
-      // se a tabela ainda não existir, o app segue sem quebrar (mas a visão semanal não funciona)
-      setBanner(up.error.message);
+    if (upErr) {
+      setBanner(upErr.message);
       return;
     }
 
-    const { data: wk, error } = await supabase
-      .from('weeks')
-      .select('id, student_id, trainer_id, week_start, week_end, label')
+    // reload list
+    const { data, error } = await supabase
+      .from('training_weeks')
+      .select('id,student_id,trainer_id,week_start,week_end,label')
       .eq('student_id', s.id)
       .order('week_start', { ascending: true });
 
@@ -196,7 +184,7 @@ export default function StudentProfilePage() {
       return;
     }
 
-    const list = (wk || []) as WeekRow[];
+    const list = (data || []) as WeekRow[];
     setWeeks(list);
 
     const currentStartISO = toISODate(startOfWeekMonday(new Date()));
@@ -210,6 +198,8 @@ export default function StudentProfilePage() {
       setLatestExecByWorkout({});
       return;
     }
+
+    setBanner(null);
 
     // Treinos da semana selecionada
     const { data: ws, error } = await supabase
@@ -236,71 +226,119 @@ export default function StudentProfilePage() {
       return;
     }
 
-    const workoutIds = list.map((w) => w.id);
-    const { data: execs, error: execErr } = await supabase
-      .from('executions')
-      .select('id, workout_id, status, performed_at, completed_at, rpe, comment, last_event_at, started_at')
-      .in('workout_id', workoutIds);
+    // pega última execução por workout (view v_workouts_last_execution existe no seu schema)
+    const ids = list.map((w) => w.id);
+    const { data: ex } = await supabase
+      .from('v_workouts_last_execution')
+      .select(
+        'workout_id, execution_id, status, started_at, last_event_at, completed_at, performed_at, total_elapsed_ms, rpe, comment, actual_total_km'
+      )
+      .in('workout_id', ids);
 
-    if (execErr) {
-      // não bloqueia a tela, só perde o "progresso"
-      setLatestExecByWorkout({});
-      return;
-    }
+    const map: Record<string, ExecutionRow | null> = {};
+    (ex || []).forEach((row: any) => {
+      map[row.workout_id] = {
+        id: row.execution_id,
+        workout_id: row.workout_id,
+        status: row.status,
+        started_at: row.started_at,
+        last_event_at: row.last_event_at,
+        completed_at: row.completed_at,
+        performed_at: row.performed_at,
+        total_elapsed_ms: row.total_elapsed_ms,
+        rpe: row.rpe,
+        comment: row.comment,
+        actual_total_km: row.actual_total_km,
+      } as any;
+    });
 
-    const byWorkout: Record<string, ExecutionRow | null> = {};
-    for (const wid of workoutIds) byWorkout[wid] = null;
+    setLatestExecByWorkout(map);
+  }
 
-    // pega a mais recente por last_event_at/started_at/completed_at
-    for (const e of (execs || []) as any[]) {
-      const cur = byWorkout[e.workout_id];
-      const curKey = cur?.last_event_at || cur?.completed_at || cur?.started_at || '';
-      const nextKey = e.last_event_at || e.completed_at || e.started_at || '';
-      if (!cur || (nextKey && nextKey > curKey)) {
-        byWorkout[e.workout_id] = e as ExecutionRow;
+  function makeRandomSlug(len = 12) {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    const arr = new Uint32Array(len);
+    // crypto.getRandomValues existe no browser moderno (incl. mobile)
+    crypto.getRandomValues(arr);
+    for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length];
+    return out;
+  }
+
+  async function ensureShareSlug(workoutId: string) {
+    // 1) tenta ler share_slug atual
+    const { data: cur, error: curErr } = await supabase.from('workouts').select('id, share_slug, status').eq('id', workoutId).maybeSingle();
+    if (curErr) throw curErr;
+    const currentSlug = (cur as any)?.share_slug as string | null;
+    if (currentSlug) return currentSlug;
+
+    // 2) gera slug e tenta gravar (lida com colisão UNIQUE)
+    for (let i = 0; i < 8; i++) {
+      const slug = makeRandomSlug(12);
+      const { data: upd, error: updErr } = await supabase
+        .from('workouts')
+        .update({ status: 'ready', share_slug: slug })
+        .eq('id', workoutId)
+        .is('share_slug', null)
+        .select('id, share_slug')
+        .maybeSingle();
+
+      if (!updErr) {
+        const got = (upd as any)?.share_slug as string | null;
+        if (got) return got;
+      } else {
+        // 23505 = unique_violation (slug já existe)
+        if ((updErr as any).code !== '23505') throw updErr;
       }
     }
 
-    setLatestExecByWorkout(byWorkout);
+    throw new Error('Não foi possível gerar o link (share_slug).');
   }
 
-  async function copyWorkoutLink(workoutId: string) {
+  async function shareWorkoutLink(workoutId: string) {
     setBanner(null);
 
-    // Trigger gera share_slug ao mudar status para ready (no banco)
-    const { data, error } = await supabase
-      .from('workouts')
-      .update({ status: 'ready' })
-      .eq('id', workoutId)
-      .select('id, share_slug')
-      .maybeSingle();
+    try {
+      const slug = await ensureShareSlug(workoutId);
+      const url = `${window.location.origin}/w/${studentSlug}/${slug}`;
 
-    if (error) {
-      setBanner(error.message);
-      return;
+      // Preferência: abrir menu nativo de compartilhamento (Android/iOS)
+      if (navigator.share) {
+        await navigator.share({
+          title: 'Treino do aluno',
+          text: `Treino programado para ${student?.name ?? 'aluno'}`,
+          url,
+        });
+        setBanner('Abrindo opções de compartilhamento...');
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(url);
+        setBanner('Link copiado para a área de transferência.');
+      } else {
+        // fallback final (WhatsApp)
+        window.open(`https://wa.me/?text=${encodeURIComponent(url)}`, '_blank');
+        setBanner('Abrindo WhatsApp para compartilhar...');
+      }
+
+      // atualiza local
+      setWorkouts((prev) => prev.map((w) => (w.id === workoutId ? ({ ...w, status: 'ready', share_slug: slug } as any) : w)));
+    } catch (e: any) {
+      setBanner(e?.message || 'Não foi possível gerar/compartilhar o link.');
     }
-
-    const slug = (data as any)?.share_slug as string | null;
-    if (!slug) {
-      setBanner('Não foi possível gerar o link (share_slug).');
-      return;
-    }
-
-    const url = `${window.location.origin}/w/${studentSlug}/${slug}`;
-    await navigator.clipboard.writeText(url);
-
-    setBanner('Link do treino copiado para a área de transferência.');
-    // atualiza local
-    setWorkouts((prev) => prev.map((w) => (w.id === workoutId ? ({ ...w, status: 'ready', share_slug: slug } as any) : w)));
   }
 
   function openWorkoutAsAluno(workout: WorkoutRow) {
     const slug = workout.share_slug;
     if (!slug) {
-      setBanner('Treino sem link (share_slug). Use "Gerar/Copiar link".');
+      setBanner('Treino sem link (share_slug). Use "Gerar/Compartilhar".');
       return;
     }
-    router.push(`/w/${studentSlug}/${slug}`);
+    const url = `/w/${studentSlug}/${slug}`;
+    // abre em nova aba/janela para o treinador não perder a tela
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank');
+    } else {
+      router.push(url);
+    }
   }
 
   // Load student
@@ -361,136 +399,136 @@ export default function StudentProfilePage() {
         <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">{header}</div>
 
         {banner && (
-          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">
-            {banner}
-          </div>
+          <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">{banner}</div>
         )}
 
-        {loading ? (
-          <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
-        ) : (
-          <>
-            {/* Seletor de semanas */}
-            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="font-semibold">Planejamento por semana</div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {selectedWeek ? selectedWeek.label || formatRangeBR(selectedWeek.week_start, selectedWeek.week_end) : '—'}
-                  </div>
-                </div>
-              </div>
-
-              {weeks.length === 0 ? (
-                <div className="mt-3 text-sm text-slate-600 dark:text-slate-300">
-                  Semanas ainda não carregadas. Verifique se a tabela <span className="font-mono">weeks</span> existe no Supabase.
-                </div>
-              ) : (
-                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
-                  {weeks.map((w) => {
-                    const active = w.id === selectedWeekId;
-                    return (
-                      <button
-                        key={w.id}
-                        onClick={() => setSelectedWeekId(w.id)}
-                        className={
-                          'px-3 py-2 rounded-full text-sm font-semibold whitespace-nowrap border ' +
-                          (active
-                            ? 'bg-primary text-slate-900 border-transparent'
-                            : 'bg-white dark:bg-surface-dark border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200')
-                        }
-                      >
-                        {formatRangeBR(w.week_start, w.week_end)}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+        {/* Calendário de semanas */}
+        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold">Planejamento por semana</h2>
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              {selectedWeek ? selectedWeek.label : '—'}
             </div>
+          </div>
 
-            {/* Lista de treinos da semana */}
-            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold">Treinos da semana</h2>
-                <div className="text-xs text-slate-500 dark:text-slate-400">Mostrando até 200</div>
+          <div className="flex flex-wrap gap-2">
+            {weeks.map((w) => (
+              <button
+                key={w.id}
+                className={`px-3 py-2 rounded-full text-sm font-semibold border ${
+                  selectedWeekId === w.id
+                    ? 'bg-primary text-slate-900 border-primary'
+                    : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'
+                }`}
+                onClick={() => setSelectedWeekId(w.id)}
+              >
+                {w.label ?? formatWeekLabel(w.week_start)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Lista de treinos da semana */}
+        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+          <div className="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <h2 className="font-semibold">Treinos da semana</h2>
+              <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Programados: <span className="font-semibold">{workouts.length}</span>
+                {' '}· Disponíveis: <span className="font-semibold">{workouts.filter((x) => x.status === 'ready').length}</span>
+                {' '}· Rascunhos: <span className="font-semibold">{workouts.filter((x) => x.status === 'draft').length}</span>
               </div>
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Mostrando até 200</div>
+          </div>
 
-              {workouts.length === 0 ? (
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  Nenhum treino programado para esta semana ainda.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {workouts.map((w) => {
-                    const latestExec = latestExecByWorkout[w.id];
-                    const progress =
-                      latestExec?.status === 'completed'
-                        ? `Concluído${latestExec.performed_at ? ` (${formatDateBRLoose(latestExec.performed_at)})` : ''}`
-                        : latestExec?.status === 'in_progress'
-                          ? 'Em andamento'
-                          : '—';
+          {workouts.length === 0 ? (
+            <div className="text-sm text-slate-600 dark:text-slate-300">Nenhum treino programado para esta semana ainda.</div>
+          ) : (
+            <div className="space-y-3">
+              {workouts.map((w) => {
+                const latestExec = latestExecByWorkout[w.id];
+                const locked = !!w.locked_at || (latestExec && (latestExec.status === 'in_progress' || latestExec.status === 'completed'));
+                const planned = w.planned_date ? `Planejado: ${formatDateBR(w.planned_date)}` : w.planned_day ? `Dia: ${w.planned_day}` : '';
+                const template = w.template_type ? w.template_type : '—';
+                const progress =
+                  latestExec?.status === 'completed'
+                    ? 'Concluído'
+                    : latestExec?.status === 'in_progress'
+                    ? 'Em andamento'
+                    : w.status === 'ready'
+                    ? 'Disponível'
+                    : w.status === 'draft'
+                    ? 'Rascunho'
+                    : 'Arquivado';
 
-                    const locked = !!w.locked_at || !!latestExec;
-                    const plannedLabel = w.planned_day ? `Ordem ${w.planned_day}` : (w.planned_date ? formatDateBRLoose(w.planned_date) : formatDateBRLoose(w.created_at));
-
-                    return (
-                      <div key={w.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 flex flex-col gap-2">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm text-slate-600 dark:text-slate-300">
-                              {plannedLabel} · {statusLabel(w.status, (w as any).closed_reason)} · {TEMPLATE_LABEL[w.template_type] ?? w.template_type} ·{' '}
-                              {kmLabel(w.total_km)} km
-                            </div>
-                            <div className="font-medium truncate">{w.title || TEMPLATE_LABEL[w.template_type] || 'Treino'}</div>
-
-                            <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                              Execução do aluno: <span className="font-semibold">{progress}</span>
-                              {locked ? ' · Edição bloqueada após início' : ''}
-                            </div>
-                          </div>
-
-                          <div className="shrink-0 flex flex-wrap gap-2 justify-end">
-                            <button
-                              className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
-                              disabled={locked}
-                              onClick={() => router.push(`/workouts/${w.id}/edit`)}
-                            >
-                              Editar
-                            </button>
-
-                            <button
-                              className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold disabled:opacity-50"
-                              disabled={w.status === 'archived'}
-                              onClick={() => copyWorkoutLink(w.id)}
-                            >
-                              Gerar/Copiar link
-                            </button>
-
-                            <button
-                              className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-                              disabled={!w.share_slug}
-                              onClick={() => openWorkoutAsAluno(w)}
-                            >
-                              Ver como aluno
-                            </button>
-                          </div>
+                return (
+                  <div key={w.id} className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
+                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="text-sm font-semibold truncate">{w.title || 'Treino'}</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">{template}</div>
+                          {w.total_km != null ? (
+                            <>
+                              <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
+                              <div className="text-xs text-slate-500 dark:text-slate-400">{formatKm(w.total_km)}</div>
+                            </>
+                          ) : null}
                         </div>
 
-                        {w.share_slug ? (
-                          <div className="text-xs text-slate-500 dark:text-slate-400">
-                            Link: <span className="font-mono">/w/{studentSlug}/{w.share_slug}</span>
-                          </div>
-                        ) : (
-                          <div className="text-xs text-slate-500 dark:text-slate-400">Link ainda não gerado (share_slug vazio).</div>
-                        )}
+                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                          {planned ? `${planned} · ` : ''}
+                          Status: <span className="font-semibold">{progress}</span>
+                          {locked ? ' · Edição bloqueada após início' : ''}
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+
+                      <div className="w-full sm:w-auto flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:justify-end">
+                        <button
+                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold whitespace-nowrap disabled:opacity-50"
+                          disabled={locked}
+                          onClick={() => router.push(`/workouts/${w.id}/edit`)}
+                        >
+                          Editar
+                        </button>
+
+                        <button
+                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold whitespace-nowrap disabled:opacity-50"
+                          disabled={w.status === 'archived'}
+                          onClick={() => shareWorkoutLink(w.id)}
+                        >
+                          Gerar/Compartilhar
+                        </button>
+
+                        <button
+                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold whitespace-nowrap disabled:opacity-50"
+                          disabled={!w.share_slug}
+                          onClick={() => openWorkoutAsAluno(w)}
+                        >
+                          Ver como aluno
+                        </button>
+                      </div>
+                    </div>
+
+                    {w.share_slug ? (
+                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                        Link: <span className="font-mono">/w/{studentSlug}/{w.share_slug}</span>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">Link ainda não gerado (share_slug vazio).</div>
+                    )}
+
+                    {w.closed_reason ? (
+                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">Encerrado: {w.closed_reason}</div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
-          </>
-        )}
+          )}
+        </div>
       </div>
     </main>
   );
