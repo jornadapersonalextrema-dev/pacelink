@@ -1,15 +1,43 @@
 import React from 'react';
 
-type TopbarProps = {
-  title: string;
+export type TopbarProps = {
+  /** Título exibido no topo (opcional para evitar quebrar builds). */
+  title?: string;
+
+  /** Exibe botão de voltar. */
   showBack?: boolean;
+
+  /** Callback do botão voltar. Se não informado, o botão não faz nada. */
   onBack?: () => void;
+
+  /**
+   * Slot à direita (versão "nova").
+   * Ex.: botões, ícones, menu.
+   */
   rightSlot?: React.ReactNode;
+
+  /**
+   * Slot à direita (compatibilidade com código antigo).
+   * Alguns lugares do projeto usam <Topbar action={...} />
+   */
+  action?: React.ReactNode;
+
+  /** Permite customizar o container sem editar o componente. */
+  className?: string;
 };
 
-export const Topbar: React.FC<TopbarProps> = ({ title, showBack, onBack, rightSlot }) => {
+export const Topbar: React.FC<TopbarProps> = ({
+  title = 'PaceLink',
+  showBack = false,
+  onBack,
+  rightSlot,
+  action,
+  className = '',
+}) => {
+  const right = rightSlot ?? action ?? null;
+
   return (
-    <div className="w-full bg-[#d1d1d1]">
+    <div className={`w-full bg-[#d1d1d1] ${className}`}>
       <div className="mx-auto max-w-2xl flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3 min-w-0">
           {showBack ? (
@@ -29,7 +57,7 @@ export const Topbar: React.FC<TopbarProps> = ({ title, showBack, onBack, rightSl
         </div>
 
         <div className="flex items-center gap-2">
-          {rightSlot ?? null}
+          {right}
         </div>
       </div>
     </div>
