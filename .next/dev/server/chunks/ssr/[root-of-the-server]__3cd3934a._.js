@@ -48,9 +48,10 @@ __turbopack_context__.s([
 ]);
 var __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/node_modules/next/dist/server/route-modules/app-page/vendored/ssr/react-jsx-dev-runtime.js [app-ssr] (ecmascript)");
 ;
-const Topbar = ({ title, showBack, onBack, rightSlot })=>{
+const Topbar = ({ title = 'PaceLink', showBack = false, onBack, rightSlot, action, className = '' })=>{
+    const right = rightSlot ?? action ?? null;
     return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
-        className: "w-full bg-[#d1d1d1]",
+        className: `w-full bg-[#d1d1d1] ${className}`,
         children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
             className: "mx-auto max-w-2xl flex items-center justify-between px-4 py-3",
             children: [
@@ -67,12 +68,12 @@ const Topbar = ({ title, showBack, onBack, rightSlot })=>{
                                 children: "‹"
                             }, void 0, false, {
                                 fileName: "[project]/components/Topbar.tsx",
-                                lineNumber: 22,
+                                lineNumber: 50,
                                 columnNumber: 15
                             }, ("TURBOPACK compile-time value", void 0))
                         }, void 0, false, {
                             fileName: "[project]/components/Topbar.tsx",
-                            lineNumber: 16,
+                            lineNumber: 44,
                             columnNumber: 13
                         }, ("TURBOPACK compile-time value", void 0)) : null,
                         /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -80,32 +81,32 @@ const Topbar = ({ title, showBack, onBack, rightSlot })=>{
                             children: title
                         }, void 0, false, {
                             fileName: "[project]/components/Topbar.tsx",
-                            lineNumber: 26,
+                            lineNumber: 54,
                             columnNumber: 11
                         }, ("TURBOPACK compile-time value", void 0))
                     ]
                 }, void 0, true, {
                     fileName: "[project]/components/Topbar.tsx",
-                    lineNumber: 14,
+                    lineNumber: 42,
                     columnNumber: 9
                 }, ("TURBOPACK compile-time value", void 0)),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                     className: "flex items-center gap-2",
-                    children: rightSlot ?? null
+                    children: right
                 }, void 0, false, {
                     fileName: "[project]/components/Topbar.tsx",
-                    lineNumber: 31,
+                    lineNumber: 59,
                     columnNumber: 9
                 }, ("TURBOPACK compile-time value", void 0))
             ]
         }, void 0, true, {
             fileName: "[project]/components/Topbar.tsx",
-            lineNumber: 13,
+            lineNumber: 41,
             columnNumber: 7
         }, ("TURBOPACK compile-time value", void 0))
     }, void 0, false, {
         fileName: "[project]/components/Topbar.tsx",
-        lineNumber: 12,
+        lineNumber: 40,
         columnNumber: 5
     }, ("TURBOPACK compile-time value", void 0));
 };
@@ -180,6 +181,20 @@ var __TURBOPACK__imported__module__$5b$project$5d2f$components$2f$Button$2e$tsx_
 ;
 ;
 ;
+const TEMPLATE_TYPE_OPTIONS = [
+    {
+        value: 'easy_run',
+        label: 'Rodagem leve'
+    },
+    {
+        value: 'progressive',
+        label: 'Progressivo'
+    },
+    {
+        value: 'alternated',
+        label: 'Alternado'
+    }
+];
 function uid() {
     return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -233,6 +248,7 @@ function NewWorkoutPage() {
     const [student, setStudent] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])(null);
     const [week, setWeek] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])(null);
     const [title, setTitle] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])('Treino');
+    const [templateType, setTemplateType] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])('easy_run');
     const [includeWarmup, setIncludeWarmup] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])(true);
     const [warmupKm, setWarmupKm] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])(1);
     const [includeCooldown, setIncludeCooldown] = (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["useState"])(true);
@@ -338,12 +354,12 @@ function NewWorkoutPage() {
                 trainer_id: trainerId,
                 student_id: student.id,
                 status: 'draft',
-                template_type: 'run',
+                template_type: templateType,
                 title: title?.trim() || null,
                 include_warmup: includeWarmup,
-                warmup_km: includeWarmup ? warmupKm : 0,
+                warmup_km: warmupKm,
                 include_cooldown: includeCooldown,
-                cooldown_km: includeCooldown ? cooldownKm : 0,
+                cooldown_km: cooldownKm,
                 total_km: totalKm,
                 share_slug: null,
                 blocks: blocks.map((b)=>({
@@ -371,9 +387,11 @@ function NewWorkoutPage() {
         return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
             className: "min-h-screen bg-gradient-to-b from-background-dark to-black text-white",
             children: [
-                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$components$2f$Topbar$2e$tsx__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"], {}, void 0, false, {
+                /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$components$2f$Topbar$2e$tsx__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"], {
+                    title: "Novo treino"
+                }, void 0, false, {
                     fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                    lineNumber: 251,
+                    lineNumber: 266,
                     columnNumber: 9
                 }, this),
                 /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -381,22 +399,24 @@ function NewWorkoutPage() {
                     children: "Carregando…"
                 }, void 0, false, {
                     fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                    lineNumber: 252,
+                    lineNumber: 267,
                     columnNumber: 9
                 }, this)
             ]
         }, void 0, true, {
             fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-            lineNumber: 250,
+            lineNumber: 265,
             columnNumber: 7
         }, this);
     }
     return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
         className: "min-h-screen bg-gradient-to-b from-background-dark to-black text-white",
         children: [
-            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$components$2f$Topbar$2e$tsx__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"], {}, void 0, false, {
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f$components$2f$Topbar$2e$tsx__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["default"], {
+                title: "Novo treino"
+            }, void 0, false, {
                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                lineNumber: 259,
+                lineNumber: 274,
                 columnNumber: 7
             }, this),
             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -415,7 +435,7 @@ function NewWorkoutPage() {
                                                 children: "Novo treino"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 264,
+                                                lineNumber: 279,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -423,7 +443,7 @@ function NewWorkoutPage() {
                                                 children: student?.name
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 265,
+                                                lineNumber: 280,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -434,31 +454,32 @@ function NewWorkoutPage() {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 266,
+                                                lineNumber: 281,
                                                 columnNumber: 15
                                             }, this),
                                             week?.week_start && week?.week_end && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                                                 className: "mt-2 text-sm text-white/70",
                                                 children: [
-                                                    "Semana: ",
+                                                    "Semana:",
+                                                    ' ',
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
                                                         className: "font-semibold",
                                                         children: week.label || formatWeekLabel(week.week_start, week.week_end)
                                                     }, void 0, false, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 269,
-                                                        columnNumber: 27
+                                                        lineNumber: 287,
+                                                        columnNumber: 19
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 268,
+                                                lineNumber: 285,
                                                 columnNumber: 17
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 263,
+                                        lineNumber: 278,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -469,18 +490,18 @@ function NewWorkoutPage() {
                                             children: "Voltar"
                                         }, void 0, false, {
                                             fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                            lineNumber: 275,
+                                            lineNumber: 295,
                                             columnNumber: 15
                                         }, this)
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 274,
+                                        lineNumber: 294,
                                         columnNumber: 13
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 262,
+                                lineNumber: 277,
                                 columnNumber: 11
                             }, this),
                             err && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -488,13 +509,13 @@ function NewWorkoutPage() {
                                 children: err
                             }, void 0, false, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 285,
+                                lineNumber: 305,
                                 columnNumber: 13
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                        lineNumber: 261,
+                        lineNumber: 276,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -510,7 +531,7 @@ function NewWorkoutPage() {
                                                 children: "Título"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 294,
+                                                lineNumber: 314,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -519,13 +540,46 @@ function NewWorkoutPage() {
                                                 className: "w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 295,
+                                                lineNumber: 315,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 293,
+                                        lineNumber: 313,
+                                        columnNumber: 13
+                                    }, this),
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                        children: [
+                                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                                className: "text-sm text-white/60 mb-1",
+                                                children: "Tipo de treino"
+                                            }, void 0, false, {
+                                                fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
+                                                lineNumber: 323,
+                                                columnNumber: 15
+                                            }, this),
+                                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("select", {
+                                                value: templateType,
+                                                onChange: (e)=>setTemplateType(e.target.value),
+                                                className: "w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary",
+                                                children: TEMPLATE_TYPE_OPTIONS.map((opt)=>/*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("option", {
+                                                        value: opt.value,
+                                                        children: opt.label
+                                                    }, opt.value, false, {
+                                                        fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
+                                                        lineNumber: 330,
+                                                        columnNumber: 19
+                                                    }, this))
+                                            }, void 0, false, {
+                                                fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
+                                                lineNumber: 324,
+                                                columnNumber: 15
+                                            }, this)
+                                        ]
+                                    }, void 0, true, {
+                                        fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
+                                        lineNumber: 322,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -535,7 +589,7 @@ function NewWorkoutPage() {
                                                 children: "Total estimado"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 303,
+                                                lineNumber: 338,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -546,19 +600,19 @@ function NewWorkoutPage() {
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 304,
+                                                lineNumber: 339,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 302,
+                                        lineNumber: 337,
                                         columnNumber: 13
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 292,
+                                lineNumber: 312,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -573,7 +627,7 @@ function NewWorkoutPage() {
                                                 onChange: (e)=>setIncludeWarmup(e.target.checked)
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 312,
+                                                lineNumber: 347,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -581,13 +635,13 @@ function NewWorkoutPage() {
                                                 children: "Aquecimento"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 313,
+                                                lineNumber: 352,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 311,
+                                        lineNumber: 346,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -596,11 +650,11 @@ function NewWorkoutPage() {
                                         onChange: (e)=>setWarmupKm(Number(e.target.value)),
                                         type: "number",
                                         step: "0.5",
-                                        min: "0",
+                                        min: "0.5",
                                         className: "w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 316,
+                                        lineNumber: 355,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -608,7 +662,7 @@ function NewWorkoutPage() {
                                         children: "km"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 325,
+                                        lineNumber: 364,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("label", {
@@ -620,7 +674,7 @@ function NewWorkoutPage() {
                                                 onChange: (e)=>setIncludeCooldown(e.target.checked)
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 328,
+                                                lineNumber: 367,
                                                 columnNumber: 15
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -628,13 +682,13 @@ function NewWorkoutPage() {
                                                 children: "Desaquecimento"
                                             }, void 0, false, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 329,
+                                                lineNumber: 372,
                                                 columnNumber: 15
                                             }, this)
                                         ]
                                     }, void 0, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 327,
+                                        lineNumber: 366,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -643,11 +697,11 @@ function NewWorkoutPage() {
                                         onChange: (e)=>setCooldownKm(Number(e.target.value)),
                                         type: "number",
                                         step: "0.5",
-                                        min: "0",
+                                        min: "0.5",
                                         className: "w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 332,
+                                        lineNumber: 375,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
@@ -655,19 +709,19 @@ function NewWorkoutPage() {
                                         children: "km"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 341,
+                                        lineNumber: 384,
                                         columnNumber: 13
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 310,
+                                lineNumber: 345,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                        lineNumber: 291,
+                        lineNumber: 311,
                         columnNumber: 9
                     }, this),
                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -681,7 +735,7 @@ function NewWorkoutPage() {
                                         children: "Blocos"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 347,
+                                        lineNumber: 390,
                                         columnNumber: 13
                                     }, this),
                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -690,13 +744,13 @@ function NewWorkoutPage() {
                                         children: "+ Adicionar bloco"
                                     }, void 0, false, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 348,
+                                        lineNumber: 391,
                                         columnNumber: 13
                                     }, this)
                                 ]
                             }, void 0, true, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 346,
+                                lineNumber: 389,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -715,7 +769,7 @@ function NewWorkoutPage() {
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 360,
+                                                        lineNumber: 403,
                                                         columnNumber: 19
                                                     }, this),
                                                     blocks.length > 1 && /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
@@ -724,13 +778,13 @@ function NewWorkoutPage() {
                                                         children: "Remover"
                                                     }, void 0, false, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 362,
+                                                        lineNumber: 405,
                                                         columnNumber: 21
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 359,
+                                                lineNumber: 402,
                                                 columnNumber: 17
                                             }, this),
                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -743,7 +797,7 @@ function NewWorkoutPage() {
                                                                 children: "Distância (km)"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 373,
+                                                                lineNumber: 413,
                                                                 columnNumber: 21
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -754,13 +808,13 @@ function NewWorkoutPage() {
                                                                 className: "w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 374,
+                                                                lineNumber: 414,
                                                                 columnNumber: 21
                                                             }, this)
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 372,
+                                                        lineNumber: 412,
                                                         columnNumber: 19
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -770,7 +824,7 @@ function NewWorkoutPage() {
                                                                 children: "Intensidade"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 382,
+                                                                lineNumber: 422,
                                                                 columnNumber: 21
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("select", {
@@ -786,7 +840,7 @@ function NewWorkoutPage() {
                                                                         children: "Leve"
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                        lineNumber: 393,
+                                                                        lineNumber: 433,
                                                                         columnNumber: 23
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("option", {
@@ -794,7 +848,7 @@ function NewWorkoutPage() {
                                                                         children: "Moderado"
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                        lineNumber: 394,
+                                                                        lineNumber: 434,
                                                                         columnNumber: 23
                                                                     }, this),
                                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("option", {
@@ -802,29 +856,29 @@ function NewWorkoutPage() {
                                                                         children: "Forte"
                                                                     }, void 0, false, {
                                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                        lineNumber: 395,
+                                                                        lineNumber: 435,
                                                                         columnNumber: 23
                                                                     }, this)
                                                                 ]
                                                             }, void 0, true, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 383,
+                                                                lineNumber: 423,
                                                                 columnNumber: 21
                                                             }, this)
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 381,
+                                                        lineNumber: 421,
                                                         columnNumber: 19
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                                                         children: [
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
                                                                 className: "text-sm text-white/60 mb-1",
-                                                                children: "Pace sugerido"
+                                                                children: "Ritmo sugerido"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 400,
+                                                                lineNumber: 440,
                                                                 columnNumber: 21
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -835,13 +889,13 @@ function NewWorkoutPage() {
                                                                 className: "w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 401,
+                                                                lineNumber: 441,
                                                                 columnNumber: 21
                                                             }, this)
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 399,
+                                                        lineNumber: 439,
                                                         columnNumber: 19
                                                     }, this),
                                                     /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -851,7 +905,7 @@ function NewWorkoutPage() {
                                                                 children: "Obs"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 409,
+                                                                lineNumber: 449,
                                                                 columnNumber: 21
                                                             }, this),
                                                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
@@ -862,30 +916,30 @@ function NewWorkoutPage() {
                                                                 className: "w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
                                                             }, void 0, false, {
                                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                                lineNumber: 410,
+                                                                lineNumber: 450,
                                                                 columnNumber: 21
                                                             }, this)
                                                         ]
                                                     }, void 0, true, {
                                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                        lineNumber: 408,
+                                                        lineNumber: 448,
                                                         columnNumber: 19
                                                     }, this)
                                                 ]
                                             }, void 0, true, {
                                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                                lineNumber: 371,
+                                                lineNumber: 411,
                                                 columnNumber: 17
                                             }, this)
                                         ]
                                     }, b.id, true, {
                                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                        lineNumber: 358,
+                                        lineNumber: 401,
                                         columnNumber: 15
                                     }, this))
                             }, void 0, false, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 356,
+                                lineNumber: 399,
                                 columnNumber: 11
                             }, this),
                             /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$ssr$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$ssr$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
@@ -896,30 +950,30 @@ function NewWorkoutPage() {
                                     children: saving ? 'Salvando…' : 'Criar treino'
                                 }, void 0, false, {
                                     fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                    lineNumber: 422,
+                                    lineNumber: 462,
                                     columnNumber: 13
                                 }, this)
                             }, void 0, false, {
                                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                                lineNumber: 421,
+                                lineNumber: 461,
                                 columnNumber: 11
                             }, this)
                         ]
                     }, void 0, true, {
                         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                        lineNumber: 345,
+                        lineNumber: 388,
                         columnNumber: 9
                     }, this)
                 ]
             }, void 0, true, {
                 fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-                lineNumber: 260,
+                lineNumber: 275,
                 columnNumber: 7
             }, this)
         ]
     }, void 0, true, {
         fileName: "[project]/app/students/[id]/workouts/new/page.tsx",
-        lineNumber: 258,
+        lineNumber: 273,
         columnNumber: 5
     }, this);
 }

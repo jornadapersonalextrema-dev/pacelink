@@ -32,8 +32,7 @@ type WorkoutRow = {
   share_slug: string | null;
 };
 
-type WeekRow = { id: string; week_start: string; week_end: string; label: string | null; };
-
+type WeekRow = { id: string; week_start: string; week_end: string; label: string | null };
 
 type BlockDraft = {
   id: string;
@@ -46,6 +45,13 @@ const TEMPLATE_LABEL: Record<string, string> = {
   progressive: 'Progressivo',
   alternated: 'Alternado',
 };
+
+const ALLOWED_TEMPLATE_TYPES = ['easy_run', 'progressive', 'alternated'] as const;
+type TemplateType = typeof ALLOWED_TEMPLATE_TYPES[number];
+
+function normalizeTemplateType(v: any): TemplateType {
+  return (ALLOWED_TEMPLATE_TYPES as readonly string[]).includes(v) ? (v as TemplateType) : 'easy_run';
+}
 
 function uid() {
   return Math.random().toString(16).slice(2);
@@ -97,7 +103,7 @@ export default function EditWorkoutPage() {
   const [plannedDate, setPlannedDate] = useState<string>('');
   const [isLocked, setIsLocked] = useState(false);
 
-  const [templateType, setTemplateType] = useState<'easy_run' | 'progressive' | 'alternated'>('easy_run');
+  const [templateType, setTemplateType] = useState<TemplateType>('easy_run');
 
   const [includeWarmup, setIncludeWarmup] = useState(true);
   const [warmupKm, setWarmupKm] = useState('2');
@@ -119,89 +125,75 @@ export default function EditWorkoutPage() {
       } = await supabase.auth.getUser();
 
       if (!user) {
-        const next = window.location.pathname + window.location.search;
-        router.replace(`/login?next=${encodeURIComponent(next)}`);
-        return;
-      }
-
-      const { data: ww, error: wErr } = await supabase
-        .from('workouts')
-        .select(
-          'id,student_id,trainer_id,status,template_type,title,planned_date,locked_at,version,created_at,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,share_slug'
-        )
-        .eq('id', workoutId)
-        .maybeSingle();
-
-      if (!alive) return;
-
-      if (wErr) {
-        setBanner(wErr.message);
+        setBanner('Você precisa estar logado.');
         setLoading(false);
         return;
       }
 
-      if (!ww) {
-        setBanner('Treino não encontrado (ou sem permissão).');
+      try {
+        const { data: ww, error } = await supabase
+          .from('workouts')
+          .select(
+            'id,student_id,trainer_id,status,template_type,title,planned_date,locked_at,version,created_at,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,share_slug'
+          )
+          .eq('id', workoutId)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (!ww) throw new Error('Treino não encontrado');
+
+        if (!alive) return;
+
+        setWorkout(ww as any);
+        setIsLocked(!!ww.locked_at);
+
+        // Carregar aluno
+        const { data: st, error: stErr } = await supabase
+          .from('students')
+          .select('id,name,public_slug')
+          .eq('id', ww.student_id)
+          .maybeSingle();
+
+        if (stErr) throw stErr;
+        if (!st) throw new Error('Aluno não encontrado');
+
+        if (!alive) return;
+
+        setStudent(st as any);
+
+        // Carregar semana se houver week_id dentro do workout.blocks ou payload (depende do schema)
+        // Se seu schema tiver week_id na tabela workouts, dá pra adicionar no select acima e buscar aqui.
+        // (mantido como opcional para não quebrar)
+
+        setTitle(ww.title ?? '');
+        setPlannedDate(ww.planned_date ?? '');
+
+        setTemplateType(normalizeTemplateType((ww.template_type as any) ?? 'easy_run'));
+
+        if (!ALLOWED_TEMPLATE_TYPES.includes((ww.template_type as any) ?? 'easy_run')) {
+          setBanner('Aviso: treino antigo tinha template_type inválido; ajustado para Rodagem.');
+        }
+
+        setIncludeWarmup(!!ww.include_warmup);
+        setWarmupKm(String(ww.warmup_km ?? '2'));
+
+        setIncludeCooldown(!!ww.include_cooldown);
+        setCooldownKm(String(ww.cooldown_km ?? '1'));
+
+        const rawBlocks: any[] = Array.isArray(ww.blocks) ? ww.blocks : [];
+        const uiBlocks: BlockDraft[] = rawBlocks.map((b: any) => ({
+          id: uid(),
+          distanceKm: String(b?.distance_km ?? '1'),
+          intensity: (b?.intensity as any) ?? 'moderado',
+        }));
+        setBlocks(uiBlocks.length ? uiBlocks : [{ id: uid(), distanceKm: '1', intensity: 'moderado' }]);
+      } catch (e: any) {
+        if (!alive) return;
+        setBanner(e?.message ? `Erro: ${e.message}` : 'Erro ao carregar.');
+      } finally {
+        if (!alive) return;
         setLoading(false);
-        return;
       }
-
-      setWorkout(ww as WorkoutRow);
-
-// Carrega semana (se existir)
-if ((ww as any)?.week_id) {
-  const { data: wk } = await supabase
-    .from('weeks')
-    .select('id, week_start, week_end, label')
-    .eq('id', (ww as any).week_id)
-    .maybeSingle();
-  setWeek((wk as any) || null);
-} else {
-  setWeek(null);
-}
-
-      setTitle(ww.title ?? '');
-      setPlannedDate(ww.planned_date ?? '');
-      setTemplateType((ww.template_type as any) ?? 'easy_run');
-
-      setIncludeWarmup(!!ww.include_warmup);
-      setWarmupKm(String(ww.warmup_km ?? '2'));
-
-      setIncludeCooldown(!!ww.include_cooldown);
-      setCooldownKm(String(ww.cooldown_km ?? '1'));
-
-      const rawBlocks = Array.isArray(ww.blocks) ? ww.blocks : [];
-      const drafts: BlockDraft[] = rawBlocks.map((b: any) => ({
-        id: uid(),
-        distanceKm: String(b.distance_km ?? b.distanceKm ?? b.km ?? '1'),
-        intensity: (b.intensity ?? 'moderado') as any,
-      }));
-      setBlocks(drafts.length ? drafts : [{ id: uid(), distanceKm: '6', intensity: 'leve' }]);
-
-      // carrega aluno
-      const { data: st, error: stErr } = await supabase
-        .from('students')
-        .select('id,name,public_slug')
-        .eq('id', ww.student_id)
-        .maybeSingle();
-
-      if (stErr) {
-        setBanner(stErr.message);
-        setLoading(false);
-        return;
-      }
-
-      setStudent(st as StudentRow);
-
-      // Se já existe execução para este treino, bloqueia edição
-      const { count: execCount } = await supabase
-        .from('executions')
-        .select('id', { count: 'exact', head: true })
-        .eq('workout_id', workoutId);
-
-      setIsLocked(!!ww.locked_at || (execCount ?? 0) > 0);
-
-      setLoading(false);
     }
 
     void load();
@@ -224,7 +216,7 @@ if ((ww as any)?.week_id) {
   function buildBlocksPayload() {
     return blocks.map((b, idx) => ({
       index: idx + 1,
-      distance_km: parseKm(b.distanceKm, 0.5),
+      distance_km: parseKm(b.distanceKm, 0.1),
       intensity: b.intensity,
     }));
   }
@@ -263,7 +255,7 @@ if ((ww as any)?.week_id) {
       const payload: any = {
         status: workout.status,
         planned_date: plannedDate ? plannedDate : null,
-        template_type: templateType,
+        template_type: normalizeTemplateType(templateType),
         title: title.trim() || null,
         include_warmup: includeWarmup,
         warmup_km: normalizedWarmup(),
@@ -315,190 +307,233 @@ if ((ww as any)?.week_id) {
       await navigator.clipboard.writeText(url);
       setBanner('Link copiado!');
     } catch {
-      setBanner(`Link: ${url}`);
+      setBanner(url);
     }
   }
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
+        <Topbar title="Editar treino" />
+        <div className="mx-auto max-w-2xl px-4 py-6">Carregando…</div>
+      </div>
+    );
+  }
+
+  if (!workout || !student) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
+        <Topbar title="Editar treino" />
+        <div className="mx-auto max-w-2xl px-4 py-6">
+          <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-4 text-red-200">
+            {banner || 'Treino não encontrado.'}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <>
+    <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
       <Topbar title="Editar treino" />
-      <main className="flex-1 p-4">
-        {loading ? (
-          <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
-        ) : banner ? (
-          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-4 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
-        ) : null}
 
-        {workout && student ? (
-          <div className="mx-auto max-w-3xl space-y-4">
-            <Card>
-              <div className="text-white/70 text-sm">Aluno</div>
-              <div className="text-white text-xl font-semibold">{student.name}</div>
-              <div className="mt-3 text-sm text-white/70">
-                Template: <span className="font-semibold text-white">{TEMPLATE_LABEL[workout.template_type] ?? workout.template_type}</span>
-              </div>
+      <div className="mx-auto max-w-2xl space-y-4 px-4 py-6">
+        <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
+          <div className="text-sm text-white/60">Aluno</div>
+          <div className="mt-1 text-2xl font-extrabold">{student.name}</div>
 
-<div className="mt-1 text-sm text-white/70">
-  Semana planejada:{' '}
-  <span className="font-semibold text-white">
-    {week ? (week.label || `${new Date(week.week_start).toLocaleDateString('pt-BR')} – ${new Date(week.week_end).toLocaleDateString('pt-BR')}`) : '—'}
-  </span>
-</div>
-
-              <div className="mt-1 text-sm text-white/70">
-                Distância total estimada: <span className="font-semibold text-white">{totalKmEstimate()} km</span>
-              </div>
-
-              {isLocked ? (
-                <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 p-3 text-sm text-amber-200">
-                  Este treino já foi iniciado pelo aluno e está <span className="font-semibold">bloqueado para edição</span>.
-                </div>
-              ) : null}
-            </Card>
-
-            <Card>
-              <div className="font-semibold text-white">Título</div>
-              <input
-                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                value={title}
-                disabled={isLocked}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Ex: Rodagem leve"
-              />
-            </Card>
-
-            <Card>
-              <div className="font-semibold text-white">Data planejada (opcional)</div>
-              <input
-                type="date"
-                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                value={plannedDate}
-                onChange={(e) => setPlannedDate(e.target.value)}
-                disabled={isLocked}
-              />
-            </Card>
-
-            <Card>
-              <div className="font-semibold text-white">Template</div>
-              <select
-                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                value={templateType}
-                disabled={isLocked}
-                onChange={(e) => setTemplateType(e.target.value as any)}
-              >
-                <option value="easy_run">Rodagem</option>
-                <option value="progressive">Progressivo</option>
-                <option value="alternated">Alternado</option>
-              </select>
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-white">Aquecimento</div>
-                <label className="inline-flex items-center gap-2 text-sm text-white/80">
-                  <input type="checkbox" checked={includeWarmup} onChange={() => !isLocked && setIncludeWarmup((v) => !v)} />
-                  Incluir
-                </label>
-              </div>
-
-              <input
-                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                value={warmupKm}
-                onChange={(e) => setWarmupKm(e.target.value)}
-                disabled={!includeWarmup || isLocked}
-                inputMode="decimal"
-              />
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-white">Blocos</div>
-                <button className="text-sm underline text-white/80" onClick={() => !isLocked && addBlock()}>
-                  + Adicionar bloco
-                </button>
-              </div>
-
-              <div className="mt-3 space-y-3">
-                {blocks.map((b, idx) => (
-                  <div key={b.id} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="text-white font-medium">Bloco {idx + 1}</div>
-                      {blocks.length > 1 ? (
-                        <button className="text-sm underline text-red-300" onClick={() => !isLocked && removeBlock(b.id)}>
-                          Remover
-                        </button>
-                      ) : null}
-                    </div>
-
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div>
-                        <div className="text-sm text-white/70">Distância (km)</div>
-                        <input
-                          className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                          value={b.distanceKm}
-                          onChange={(e) => !isLocked && updateBlock(b.id, { distanceKm: e.target.value })}
-                          inputMode="decimal"
-                          disabled={isLocked}
-                        />
-                      </div>
-
-                      <div>
-                        <div className="text-sm text-white/70">Intensidade</div>
-                        <div className="mt-2 flex gap-2">
-                          {(['leve', 'moderado', 'forte'] as const).map((opt) => (
-                            <button
-                              key={opt}
-                              type="button"
-                              disabled={isLocked}
-                              onClick={() => !isLocked && updateBlock(b.id, { intensity: opt })}
-                              className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap disabled:opacity-60 ${
-                                b.intensity === opt ? 'bg-[#2ef57f] text-slate-900' : 'bg-white/10 text-white'
-                              }`}
-                            >
-                              {opt === 'leve' ? 'Leve' : opt === 'moderado' ? 'Moderado' : 'Forte'}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-
-            <Card>
-              <div className="flex items-center justify-between">
-                <div className="font-semibold text-white">Desaquecimento</div>
-                <label className="inline-flex items-center gap-2 text-sm text-white/80">
-                  <input type="checkbox" checked={includeCooldown} onChange={() => !isLocked && setIncludeCooldown((v) => !v)} />
-                  Incluir
-                </label>
-              </div>
-
-              <input
-                className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
-                value={cooldownKm}
-                onChange={(e) => setCooldownKm(e.target.value)}
-                disabled={!includeCooldown || isLocked}
-                inputMode="decimal"
-              />
-            </Card>
-
-            <div className="flex flex-col sm:flex-row gap-2">
-              <Button onClick={save} disabled={saving || isLocked} fullWidth>
-                Salvar alterações
-              </Button>
-              <Button onClick={copyLink} disabled={saving} fullWidth>
-                Copiar link do aluno
-              </Button>
+          <div className="mt-3 grid gap-2 text-sm text-white/70">
+            <div>
+              Status:{' '}
+              <span className="font-semibold text-white">
+                {workout.status === 'draft' ? 'Rascunho' : workout.status === 'ready' ? 'Disponível' : 'Arquivado'}
+              </span>
             </div>
 
-            <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.push(`/students/${workout.student_id}`)}>
-              Voltar para o aluno
+            <div>
+              Template:{' '}
+              <span className="font-semibold text-white">
+                {TEMPLATE_LABEL[workout.template_type] ?? workout.template_type}
+              </span>
+            </div>
+
+            {week?.label ? (
+              <div>
+                Semana: <span className="font-semibold text-white">{week.label}</span>
+              </div>
+            ) : null}
+          </div>
+
+          {banner ? (
+            <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-3 text-sm text-white/80">{banner}</div>
+          ) : null}
+
+          {isLocked ? (
+            <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-3 text-sm text-yellow-100">
+              Este treino já foi iniciado pelo aluno e está bloqueado para edição.
+            </div>
+          ) : null}
+
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              onClick={() => router.back()}
+              className="h-10 rounded-full border border-white/10 bg-white/5 px-4 text-white hover:bg-white/10"
+            >
+              Voltar
+            </button>
+
+            <button
+              onClick={copyLink}
+              className="h-10 rounded-full border border-white/10 bg-white/5 px-4 text-white hover:bg-white/10"
+            >
+              Copiar link do aluno
             </button>
           </div>
-        ) : null}
-      </main>
-    </>
+        </div>
+
+        <div className="grid gap-4">
+          <Card>
+            <div className="font-semibold text-white">Título</div>
+            <input
+              className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white placeholder:text-white/40 focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+              value={title}
+              disabled={isLocked}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Ex: Rodagem leve"
+            />
+          </Card>
+
+          <Card>
+            <div className="font-semibold text-white">Data planejada (opcional)</div>
+            <input
+              type="date"
+              className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+              value={plannedDate}
+              onChange={(e) => setPlannedDate(e.target.value)}
+              disabled={isLocked}
+            />
+          </Card>
+
+          <Card>
+            <div className="font-semibold text-white">Template</div>
+            <select
+              className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+              value={templateType}
+              disabled={isLocked}
+              onChange={(e) => setTemplateType(normalizeTemplateType(e.target.value))}
+            >
+              <option value="easy_run">Rodagem</option>
+              <option value="progressive">Progressivo</option>
+              <option value="alternated">Alternado</option>
+            </select>
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-white">Aquecimento</div>
+              <label className="inline-flex items-center gap-2 text-sm text-white/80">
+                <input type="checkbox" checked={includeWarmup} onChange={() => !isLocked && setIncludeWarmup((v) => !v)} />
+                Incluir
+              </label>
+            </div>
+
+            <input
+              className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+              value={warmupKm}
+              onChange={(e) => setWarmupKm(e.target.value)}
+              disabled={!includeWarmup || isLocked}
+              inputMode="decimal"
+            />
+            <div className="mt-1 text-xs text-white/50">km (mínimo 0,5)</div>
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-white">Desaquecimento</div>
+              <label className="inline-flex items-center gap-2 text-sm text-white/80">
+                <input type="checkbox" checked={includeCooldown} onChange={() => !isLocked && setIncludeCooldown((v) => !v)} />
+                Incluir
+              </label>
+            </div>
+
+            <input
+              className="mt-3 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+              value={cooldownKm}
+              onChange={(e) => setCooldownKm(e.target.value)}
+              disabled={!includeCooldown || isLocked}
+              inputMode="decimal"
+            />
+            <div className="mt-1 text-xs text-white/50">km (mínimo 0,5)</div>
+          </Card>
+
+          <Card>
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-white">Blocos</div>
+              <button
+                onClick={addBlock}
+                disabled={isLocked}
+                className="h-10 rounded-full border border-white/10 bg-white/5 px-4 text-white hover:bg-white/10 disabled:opacity-60"
+              >
+                + Adicionar bloco
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              {blocks.map((b, idx) => (
+                <div key={b.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-white">Bloco {idx + 1}</div>
+                    {blocks.length > 1 ? (
+                      <button
+                        disabled={isLocked}
+                        onClick={() => removeBlock(b.id)}
+                        className="text-sm text-red-200 hover:text-red-100 disabled:opacity-60"
+                      >
+                        Remover
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="text-sm text-white/60">Distância (km)</div>
+                      <input
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                        value={b.distanceKm}
+                        disabled={isLocked}
+                        onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
+                        inputMode="decimal"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="text-sm text-white/60">Intensidade</div>
+                      <select
+                        className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-[#2ef57f]/30 disabled:opacity-60"
+                        value={b.intensity}
+                        disabled={isLocked}
+                        onChange={(e) => updateBlock(b.id, { intensity: e.target.value as any })}
+                      >
+                        <option value="leve">Leve</option>
+                        <option value="moderado">Moderado</option>
+                        <option value="forte">Forte</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 text-sm text-white/70">Total estimado: <span className="font-semibold text-white">{totalKmEstimate()} km</span></div>
+          </Card>
+
+          <div className="flex gap-3">
+            <Button onClick={save} disabled={saving || isLocked}>
+              {saving ? 'Salvando…' : 'Salvar'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
