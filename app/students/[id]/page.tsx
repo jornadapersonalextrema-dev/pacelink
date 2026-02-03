@@ -448,7 +448,11 @@ export default function StudentTrainerPage() {
             <div className="space-y-3">
               {workouts.map((w) => {
                 const latestExec = latestExecByWorkout[w.id];
-                const locked = !!w.locked_at || (latestExec && (latestExec.status === 'in_progress' || latestExec.status === 'completed'));
+                const locked =
+  !!w.locked_at ||
+  latestExec?.status === 'in_progress' ||
+  latestExec?.status === 'completed';
+
                 const planned = w.planned_date ? `Planejado: ${formatDateBR(w.planned_date)}` : w.planned_day ? `Dia: ${w.planned_day}` : '';
                 const template = w.template_type ? w.template_type : '—';
                 const progress =
