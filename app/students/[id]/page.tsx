@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { createClient } from '../../../lib/supabaseBrowser';
 
 type StudentRow = {
@@ -52,6 +52,12 @@ type ExecutionRow = {
   rpe: number | null;
   comment: string | null;
   actual_total_km: number | null;
+};
+
+const TEMPLATE_LABEL: Record<string, string> = {
+  easy_run: 'Rodagem',
+  progressive: 'Progressivo',
+  alternated: 'Alternado',
 };
 
 function startOfWeekMonday(date: Date) {
@@ -110,6 +116,7 @@ function formatDateBR(dateStr?: string | null) {
 
 export default function StudentTrainerPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const params = useParams<{ id: string }>();
   const studentId = params.id;
 
@@ -123,7 +130,29 @@ export default function StudentTrainerPage() {
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
 
+  // contagem de treinos por semana (para filtrar histórico)
+  const [weekWorkoutCounts, setWeekWorkoutCounts] = useState<Record<string, number>>({});
+
+  const view = searchParams.get('view');
+  const showHistory = view === 'history';
+
   const studentSlug = student?.public_slug ?? 'aluno';
+
+  const currentWeekStartISO = useMemo(() => toISODate(startOfWeekMonday(new Date())), []);
+
+  function visibleWeeks() {
+    if (!weeks.length) return [];
+
+    if (!showHistory) {
+      // só semanas da semana atual em diante
+      return weeks.filter((w) => w.week_start >= currentWeekStartISO);
+    }
+
+    // histórico: só semanas passadas que tiveram treinos
+    return weeks
+      .filter((w) => w.week_start < currentWeekStartISO)
+      .filter((w) => (weekWorkoutCounts[w.id] ?? 0) > 0);
+  }
 
   async function loadStudent() {
     setBanner(null);
@@ -147,13 +176,12 @@ export default function StudentTrainerPage() {
   }
 
   async function ensureUpcomingWeeks(s: StudentRow) {
-    // garante que as próximas semanas existam na tabela training_weeks
+    // garante as próximas semanas (sem mexer no histórico)
     setBanner(null);
 
     const start = startOfWeekMonday(new Date());
-    const starts = Array.from({ length: 6 }).map((_, i) => toISODate(addDays(start, i * 7)));
+    const starts = Array.from({ length: 10 }).map((_, i) => toISODate(addDays(start, i * 7)));
 
-    // upsert: (student_id, week_start) unique
     const payload = starts.map((ws) => ({
       student_id: s.id,
       trainer_id: s.trainer_id,
@@ -162,7 +190,6 @@ export default function StudentTrainerPage() {
       label: formatWeekLabel(ws),
     }));
 
-    // Table real: training_weeks
     const { error: upErr } = await supabase.from('training_weeks').upsert(payload, {
       onConflict: 'student_id,week_start',
     });
@@ -172,7 +199,6 @@ export default function StudentTrainerPage() {
       return;
     }
 
-    // reload list
     const { data, error } = await supabase
       .from('training_weeks')
       .select('id,student_id,trainer_id,week_start,week_end,label')
@@ -184,12 +210,31 @@ export default function StudentTrainerPage() {
       return;
     }
 
-    const list = (data || []) as WeekRow[];
-    setWeeks(list);
+    setWeeks((data || []) as WeekRow[]);
+  }
 
-    const currentStartISO = toISODate(startOfWeekMonday(new Date()));
-    const current = list.find((w) => w.week_start === currentStartISO) || list[0] || null;
-    setSelectedWeekId(current?.id || null);
+  async function loadWeekWorkoutCounts(student_id: string) {
+    // Para filtrar histórico: só semanas com treinos
+    const { data, error } = await supabase
+      .from('workouts')
+      .select('week_id')
+      .eq('student_id', student_id)
+      .not('week_id', 'is', null)
+      .limit(1000);
+
+    if (error) {
+      // não bloqueia a tela; só não filtra histórico
+      return;
+    }
+
+    const counts: Record<string, number> = {};
+    (data || []).forEach((row: any) => {
+      const wid = row.week_id as string | null;
+      if (!wid) return;
+      counts[wid] = (counts[wid] ?? 0) + 1;
+    });
+
+    setWeekWorkoutCounts(counts);
   }
 
   async function loadWorkoutsForWeek(weekId: string | null) {
@@ -201,7 +246,6 @@ export default function StudentTrainerPage() {
 
     setBanner(null);
 
-    // Treinos da semana selecionada
     const { data: ws, error } = await supabase
       .from('workouts')
       .select(
@@ -226,7 +270,6 @@ export default function StudentTrainerPage() {
       return;
     }
 
-    // pega última execução por workout (view v_workouts_last_execution existe no seu schema)
     const ids = list.map((w) => w.id);
     const { data: ex } = await supabase
       .from('v_workouts_last_execution')
@@ -259,20 +302,17 @@ export default function StudentTrainerPage() {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     let out = '';
     const arr = new Uint32Array(len);
-    // crypto.getRandomValues existe no browser moderno (incl. mobile)
     crypto.getRandomValues(arr);
     for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length];
     return out;
   }
 
   async function ensureShareSlug(workoutId: string) {
-    // 1) tenta ler share_slug atual
     const { data: cur, error: curErr } = await supabase.from('workouts').select('id, share_slug, status').eq('id', workoutId).maybeSingle();
     if (curErr) throw curErr;
     const currentSlug = (cur as any)?.share_slug as string | null;
     if (currentSlug) return currentSlug;
 
-    // 2) gera slug e tenta gravar (lida com colisão UNIQUE)
     for (let i = 0; i < 8; i++) {
       const slug = makeRandomSlug(12);
       const { data: upd, error: updErr } = await supabase
@@ -287,12 +327,11 @@ export default function StudentTrainerPage() {
         const got = (upd as any)?.share_slug as string | null;
         if (got) return got;
       } else {
-        // 23505 = unique_violation (slug já existe)
         if ((updErr as any).code !== '23505') throw updErr;
       }
     }
 
-    throw new Error('Não foi possível gerar o link (share_slug).');
+    throw new Error('Não foi possível gerar o link do treino.');
   }
 
   async function shareWorkoutLink(workoutId: string) {
@@ -302,24 +341,21 @@ export default function StudentTrainerPage() {
       const slug = await ensureShareSlug(workoutId);
       const url = `${window.location.origin}/w/${studentSlug}/${slug}`;
 
-      // Preferência: abrir menu nativo de compartilhamento (Android/iOS)
       if (navigator.share) {
         await navigator.share({
           title: 'Treino do aluno',
           text: `Treino programado para ${student?.name ?? 'aluno'}`,
           url,
         });
-        setBanner('Abrindo opções de compartilhamento...');
+        setBanner('Abrindo opções de compartilhamento…');
       } else if (navigator.clipboard) {
         await navigator.clipboard.writeText(url);
-        setBanner('Link copiado para a área de transferência.');
+        setBanner('Link copiado.');
       } else {
-        // fallback final (WhatsApp)
         window.open(`https://wa.me/?text=${encodeURIComponent(url)}`, '_blank');
-        setBanner('Abrindo WhatsApp para compartilhar...');
+        setBanner('Abrindo WhatsApp…');
       }
 
-      // atualiza local
       setWorkouts((prev) => prev.map((w) => (w.id === workoutId ? ({ ...w, status: 'ready', share_slug: slug } as any) : w)));
     } catch (e: any) {
       setBanner(e?.message || 'Não foi possível gerar/compartilhar o link.');
@@ -329,16 +365,16 @@ export default function StudentTrainerPage() {
   function openWorkoutAsAluno(workout: WorkoutRow) {
     const slug = workout.share_slug;
     if (!slug) {
-      setBanner('Treino sem link (share_slug). Use "Gerar/Compartilhar".');
+      setBanner('Treino sem link. Use “Gerar/Compartilhar”.');
       return;
     }
     const url = `/w/${studentSlug}/${slug}`;
-    // abre em nova aba/janela para o treinador não perder a tela
-    if (typeof window !== 'undefined') {
-      window.open(url, '_blank');
-    } else {
-      router.push(url);
-    }
+    window.open(url, '_blank');
+  }
+
+  function goHistory(flag: boolean) {
+    const url = flag ? `/students/${studentId}?view=history` : `/students/${studentId}`;
+    router.replace(url);
   }
 
   // Load student
@@ -352,8 +388,21 @@ export default function StudentTrainerPage() {
   useEffect(() => {
     if (!student) return;
     ensureUpcomingWeeks(student);
+    loadWeekWorkoutCounts(student.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [student?.id]);
+
+  // Ajusta week selecionada para sempre ser uma das visíveis
+  useEffect(() => {
+    const vis = visibleWeeks();
+    if (vis.length === 0) {
+      setSelectedWeekId(null);
+      return;
+    }
+    const stillValid = selectedWeekId && vis.some((w) => w.id === selectedWeekId);
+    if (!stillValid) setSelectedWeekId(vis[0].id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weeks, weekWorkoutCounts, showHistory]);
 
   // Load workouts when week changes
   useEffect(() => {
@@ -362,84 +411,104 @@ export default function StudentTrainerPage() {
   }, [selectedWeekId]);
 
   const selectedWeek = weeks.find((w) => w.id === selectedWeekId) || null;
+  const visWeeks = visibleWeeks();
 
-  const header = (
-    <div className="flex items-start justify-between gap-3">
-      <div className="min-w-0">
-        <div className="text-sm text-slate-600 dark:text-slate-300">Aluno</div>
-        <div className="text-xl font-semibold truncate">{student?.name ?? '—'}</div>
-        <div className="text-sm text-slate-600 dark:text-slate-300 mt-1">
-          Ritmo P1k: <span className="font-semibold">{formatPace(student?.p1k_sec_per_km ?? null)}</span>
-          {student?.email ? <> · {student.email}</> : null}
-        </div>
-        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-          Links do aluno: <span className="font-mono">/aluno</span> (login) ·{' '}
-          <span className="font-mono">/w/{studentSlug}/&lt;treino&gt;</span>
-        </div>
-      </div>
-
-      <div className="shrink-0 flex flex-col items-end gap-2">
-        <button
-          className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-          disabled={!selectedWeekId}
-          onClick={() => router.push(`/students/${studentId}/workouts/new?weekId=${selectedWeekId}`)}
-        >
-          + Programar treino
-        </button>
-        <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.push('/students')}>
-          Voltar
-        </button>
-      </div>
-    </div>
-  );
+  const plannedCount = workouts.length;
+  const readyCount = workouts.filter((x) => x.status === 'ready').length;
+  const draftCount = workouts.filter((x) => x.status === 'draft').length;
 
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
       <div className="mx-auto max-w-3xl space-y-4">
-        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">{header}</div>
+        {/* Cabeçalho aluno */}
+        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-slate-600 dark:text-slate-300">Aluno</div>
+              <div className="mt-1 text-2xl font-extrabold leading-tight break-words">{student?.name ?? '—'}</div>
+              <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">
+                Ritmo P1k: <span className="font-semibold">{formatPace(student?.p1k_sec_per_km ?? null)}</span>
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-col items-end gap-2">
+              <button
+                className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
+                disabled={!selectedWeekId}
+                onClick={() => router.push(`/students/${studentId}/workouts/new?weekId=${selectedWeekId}`)}
+              >
+                + Programar treino
+              </button>
+              <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.push('/students')}>
+                Voltar
+              </button>
+            </div>
+          </div>
+        </div>
 
         {banner && (
           <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">{banner}</div>
         )}
 
-        {/* Calendário de semanas */}
+        {/* Semanas */}
         <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold">Planejamento por semana</h2>
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              {selectedWeek ? selectedWeek.label : '—'}
+          <div className="flex items-center justify-between mb-3 gap-3">
+            <div>
+              <h2 className="font-semibold">Planejamento por semana</h2>
+              <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{selectedWeek ? selectedWeek.label : '—'}</div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {!showHistory ? (
+                <button
+                  className="text-sm underline text-slate-600 dark:text-slate-300 disabled:opacity-50"
+                  disabled={Object.values(weekWorkoutCounts).every((v) => v === 0)}
+                  onClick={() => goHistory(true)}
+                >
+                  Ver histórico
+                </button>
+              ) : (
+                <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => goHistory(false)}>
+                  Voltar para semanas atuais
+                </button>
+              )}
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {weeks.map((w) => (
-              <button
-                key={w.id}
-                className={`px-3 py-2 rounded-full text-sm font-semibold border ${
-                  selectedWeekId === w.id
-                    ? 'bg-primary text-slate-900 border-primary'
-                    : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'
-                }`}
-                onClick={() => setSelectedWeekId(w.id)}
-              >
-                {w.label ?? formatWeekLabel(w.week_start)}
-              </button>
-            ))}
-          </div>
+          {visWeeks.length === 0 ? (
+            <div className="text-sm text-slate-600 dark:text-slate-300">
+              {showHistory ? 'Sem histórico de semanas com treinos.' : 'Semanas futuras ainda não carregadas.'}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {visWeeks.map((w) => (
+                <button
+                  key={w.id}
+                  className={`px-3 py-2 rounded-full text-sm font-semibold border ${
+                    selectedWeekId === w.id
+                      ? 'bg-primary text-slate-900 border-primary'
+                      : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'
+                  }`}
+                  onClick={() => setSelectedWeekId(w.id)}
+                >
+                  {w.label ?? formatWeekLabel(w.week_start)}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        {/* Lista de treinos da semana */}
+        {/* Treinos da semana */}
         <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
           <div className="flex items-start justify-between gap-3 mb-3">
             <div>
               <h2 className="font-semibold">Treinos da semana</h2>
               <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Programados: <span className="font-semibold">{workouts.length}</span>
-                {' '}· Disponíveis: <span className="font-semibold">{workouts.filter((x) => x.status === 'ready').length}</span>
-                {' '}· Rascunhos: <span className="font-semibold">{workouts.filter((x) => x.status === 'draft').length}</span>
+                Programados: <span className="font-semibold">{plannedCount}</span> · Disponíveis:{' '}
+                <span className="font-semibold">{readyCount}</span> · Rascunhos: <span className="font-semibold">{draftCount}</span>
               </div>
             </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">Mostrando até 200</div>
+            {/* removido "Mostrando até 200" */}
           </div>
 
           {workouts.length === 0 ? (
@@ -447,14 +516,16 @@ export default function StudentTrainerPage() {
           ) : (
             <div className="space-y-3">
               {workouts.map((w) => {
-                const latestExec = latestExecByWorkout[w.id];
+                const latestExec = latestExecByWorkout[w.id] ?? null;
+
+                // boolean SEM null (para não quebrar TS)
                 const locked =
-  !!w.locked_at ||
-  latestExec?.status === 'in_progress' ||
-  latestExec?.status === 'completed';
+                  !!w.locked_at || latestExec?.status === 'in_progress' || latestExec?.status === 'completed';
 
                 const planned = w.planned_date ? `Planejado: ${formatDateBR(w.planned_date)}` : w.planned_day ? `Dia: ${w.planned_day}` : '';
-                const template = w.template_type ? w.template_type : '—';
+
+                const templateLabel = TEMPLATE_LABEL[w.template_type ?? ''] ?? 'Rodagem';
+
                 const progress =
                   latestExec?.status === 'completed'
                     ? 'Concluído'
@@ -471,9 +542,9 @@ export default function StudentTrainerPage() {
                     <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <div className="text-sm font-semibold truncate">{w.title || 'Treino'}</div>
+                          <div className="text-sm font-semibold break-words">{w.title || 'Treino'}</div>
                           <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">{template}</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">{templateLabel}</div>
                           {w.total_km != null ? (
                             <>
                               <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
@@ -516,13 +587,10 @@ export default function StudentTrainerPage() {
                       </div>
                     </div>
 
-                    {w.share_slug ? (
-                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">
-                        Link: <span className="font-mono">/w/{studentSlug}/{w.share_slug}</span>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">Link ainda não gerado (share_slug vazio).</div>
-                    )}
+                    {/* Removido URL do link (não é clicável) */}
+                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+                      {w.share_slug ? 'Link gerado.' : 'Link ainda não gerado.'}
+                    </div>
 
                     {w.closed_reason ? (
                       <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">Encerrado: {w.closed_reason}</div>
