@@ -12,6 +12,8 @@ type StudentRow = {
   p1k_sec_per_km: number | null;
   public_slug: string | null;
   created_at: string | null;
+  portal_token: string | null;
+  portal_enabled: boolean | null;
 };
 
 type WeekRow = {
@@ -35,7 +37,6 @@ type WorkoutRow = {
   planned_date: string | null;
   planned_day: number | null;
   created_at: string | null;
-  share_slug: string | null;
   locked_at: string | null;
   closed_reason: string | null;
 };
@@ -83,7 +84,6 @@ function addDays(d: Date, days: number) {
 }
 
 function formatWeekLabel(weekStartISO: string) {
-  // "Semana dd/mm - dd/mm"
   const [y, m, d] = weekStartISO.split('-');
   const start = new Date(Number(y), Number(m) - 1, Number(d));
   const end = addDays(start, 6);
@@ -114,6 +114,13 @@ function formatDateBR(dateStr?: string | null) {
   return `${d}/${m}/${y}`;
 }
 
+function generateTokenBase64Url(bytes = 24) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  const b64 = btoa(String.fromCharCode(...arr));
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 export default function StudentTrainerPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -129,26 +136,19 @@ export default function StudentTrainerPage() {
 
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
-
-  // contagem de treinos por semana (para filtrar histórico)
   const [weekWorkoutCounts, setWeekWorkoutCounts] = useState<Record<string, number>>({});
 
   const view = searchParams.get('view');
   const showHistory = view === 'history';
 
-  const studentSlug = student?.public_slug ?? 'aluno';
-
   const currentWeekStartISO = useMemo(() => toISODate(startOfWeekMonday(new Date())), []);
+  const studentSlug = student?.public_slug ?? 'aluno';
 
   function visibleWeeks() {
     if (!weeks.length) return [];
-
     if (!showHistory) {
-      // só semanas da semana atual em diante
       return weeks.filter((w) => w.week_start >= currentWeekStartISO);
     }
-
-    // histórico: só semanas passadas que tiveram treinos
     return weeks
       .filter((w) => w.week_start < currentWeekStartISO)
       .filter((w) => (weekWorkoutCounts[w.id] ?? 0) > 0);
@@ -158,7 +158,7 @@ export default function StudentTrainerPage() {
     setBanner(null);
     const { data, error } = await supabase
       .from('students')
-      .select('id,trainer_id,name,email,p1k_sec_per_km,public_slug,created_at')
+      .select('id,trainer_id,name,email,p1k_sec_per_km,public_slug,created_at,portal_token,portal_enabled')
       .eq('id', studentId)
       .maybeSingle();
 
@@ -166,17 +166,14 @@ export default function StudentTrainerPage() {
       setBanner(error.message);
       return;
     }
-
     if (!data) {
       setBanner('Aluno não encontrado.');
       return;
     }
-
     setStudent(data as any);
   }
 
   async function ensureUpcomingWeeks(s: StudentRow) {
-    // garante as próximas semanas (sem mexer no histórico)
     setBanner(null);
 
     const start = startOfWeekMonday(new Date());
@@ -214,18 +211,14 @@ export default function StudentTrainerPage() {
   }
 
   async function loadWeekWorkoutCounts(student_id: string) {
-    // Para filtrar histórico: só semanas com treinos
     const { data, error } = await supabase
       .from('workouts')
       .select('week_id')
       .eq('student_id', student_id)
       .not('week_id', 'is', null)
-      .limit(1000);
+      .limit(2000);
 
-    if (error) {
-      // não bloqueia a tela; só não filtra histórico
-      return;
-    }
+    if (error) return;
 
     const counts: Record<string, number> = {};
     (data || []).forEach((row: any) => {
@@ -249,13 +242,13 @@ export default function StudentTrainerPage() {
     const { data: ws, error } = await supabase
       .from('workouts')
       .select(
-        'id, student_id, trainer_id, status, template_type, title, total_km, created_at, planned_date, planned_day, share_slug, week_id, locked_at, closed_reason'
+        'id, student_id, trainer_id, status, template_type, title, total_km, created_at, planned_date, planned_day, week_id, locked_at, closed_reason'
       )
       .eq('student_id', studentId)
       .eq('week_id', weekId)
       .order('planned_day', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: false })
-      .limit(200);
+      .order('created_at', { ascending: true })
+      .limit(50);
 
     if (error) {
       setBanner(error.message);
@@ -271,110 +264,122 @@ export default function StudentTrainerPage() {
     }
 
     const ids = list.map((w) => w.id);
+
     const { data: ex } = await supabase
-      .from('v_workouts_last_execution')
-      .select(
-        'workout_id, execution_id, status, started_at, last_event_at, completed_at, performed_at, total_elapsed_ms, rpe, comment, actual_total_km'
-      )
-      .in('workout_id', ids);
+      .from('executions')
+      .select('id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km')
+      .in('workout_id', ids)
+      .order('last_event_at', { ascending: false, nullsFirst: false });
 
     const map: Record<string, ExecutionRow | null> = {};
     (ex || []).forEach((row: any) => {
-      map[row.workout_id] = {
-        id: row.execution_id,
-        workout_id: row.workout_id,
-        status: row.status,
-        started_at: row.started_at,
-        last_event_at: row.last_event_at,
-        completed_at: row.completed_at,
-        performed_at: row.performed_at,
-        total_elapsed_ms: row.total_elapsed_ms,
-        rpe: row.rpe,
-        comment: row.comment,
-        actual_total_km: row.actual_total_km,
-      } as any;
+      if (!map[row.workout_id]) {
+        map[row.workout_id] = row as ExecutionRow;
+      }
     });
 
     setLatestExecByWorkout(map);
   }
 
-  function makeRandomSlug(len = 12) {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let out = '';
-    const arr = new Uint32Array(len);
-    crypto.getRandomValues(arr);
-    for (let i = 0; i < len; i++) out += chars[arr[i] % chars.length];
-    return out;
-  }
-
-  async function ensureShareSlug(workoutId: string) {
-    const { data: cur, error: curErr } = await supabase.from('workouts').select('id, share_slug, status').eq('id', workoutId).maybeSingle();
-    if (curErr) throw curErr;
-    const currentSlug = (cur as any)?.share_slug as string | null;
-    if (currentSlug) return currentSlug;
-
-    for (let i = 0; i < 8; i++) {
-      const slug = makeRandomSlug(12);
-      const { data: upd, error: updErr } = await supabase
-        .from('workouts')
-        .update({ status: 'ready', share_slug: slug })
-        .eq('id', workoutId)
-        .is('share_slug', null)
-        .select('id, share_slug')
-        .maybeSingle();
-
-      if (!updErr) {
-        const got = (upd as any)?.share_slug as string | null;
-        if (got) return got;
-      } else {
-        if ((updErr as any).code !== '23505') throw updErr;
-      }
-    }
-
-    throw new Error('Não foi possível gerar o link do treino.');
-  }
-
-  async function shareWorkoutLink(workoutId: string) {
-    setBanner(null);
-
-    try {
-      const slug = await ensureShareSlug(workoutId);
-      const url = `${window.location.origin}/w/${studentSlug}/${slug}`;
-
-      if (navigator.share) {
-        await navigator.share({
-          title: 'Treino do aluno',
-          text: `Treino programado para ${student?.name ?? 'aluno'}`,
-          url,
-        });
-        setBanner('Abrindo opções de compartilhamento…');
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(url);
-        setBanner('Link copiado.');
-      } else {
-        window.open(`https://wa.me/?text=${encodeURIComponent(url)}`, '_blank');
-        setBanner('Abrindo WhatsApp…');
-      }
-
-      setWorkouts((prev) => prev.map((w) => (w.id === workoutId ? ({ ...w, status: 'ready', share_slug: slug } as any) : w)));
-    } catch (e: any) {
-      setBanner(e?.message || 'Não foi possível gerar/compartilhar o link.');
-    }
-  }
-
-  function openWorkoutAsAluno(workout: WorkoutRow) {
-    const slug = workout.share_slug;
-    if (!slug) {
-      setBanner('Treino sem link. Use “Gerar/Compartilhar”.');
-      return;
-    }
-    const url = `/w/${studentSlug}/${slug}`;
-    window.open(url, '_blank');
-  }
-
   function goHistory(flag: boolean) {
     const url = flag ? `/students/${studentId}?view=history` : `/students/${studentId}`;
     router.replace(url);
+  }
+
+  async function ensurePortalToken() {
+    if (!student) throw new Error('Aluno não carregado.');
+    if (student.portal_enabled === false) throw new Error('Portal do aluno está desabilitado.');
+
+    if (student.portal_token) return student.portal_token;
+
+    const token = generateTokenBase64Url(24); // ~32 chars url-safe
+    const { data, error } = await supabase
+      .from('students')
+      .update({ portal_token: token, portal_token_created_at: new Date().toISOString(), portal_enabled: true })
+      .eq('id', student.id)
+      .select('portal_token')
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    const saved = (data as any)?.portal_token as string | null;
+    if (!saved) throw new Error('Não foi possível gerar o token do portal.');
+    setStudent((prev) => (prev ? { ...prev, portal_token: saved } : prev));
+    return saved;
+  }
+
+  function portalUrl(token: string) {
+    return `${window.location.origin}/p/${studentSlug}?t=${encodeURIComponent(token)}`;
+  }
+
+  async function sharePortalAccess() {
+    setBanner(null);
+    try {
+      const token = await ensurePortalToken();
+      const url = portalUrl(token);
+      const msg = `Olá! Seus treinos ficam no Portal do PaceLink:\n${url}\n\nA cada semana, seus treinos serão liberados aqui.`;
+
+      if (navigator.share) {
+        await navigator.share({ title: 'PaceLink - Portal do aluno', text: msg, url });
+        setBanner('Abrindo opções de compartilhamento…');
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(msg);
+        setBanner('Mensagem copiada. Cole no WhatsApp.');
+      } else {
+        window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+        setBanner('Abrindo WhatsApp…');
+      }
+    } catch (e: any) {
+      setBanner(e?.message || 'Não foi possível compartilhar o acesso.');
+    }
+  }
+
+  async function publishWeekAndNotify() {
+    setBanner(null);
+    try {
+      if (!selectedWeekId) throw new Error('Selecione uma semana.');
+      if (!student) throw new Error('Aluno não carregado.');
+
+      const token = await ensurePortalToken();
+      const url = portalUrl(token);
+      const week = weeks.find((w) => w.id === selectedWeekId);
+      const weekLabel = week?.label || (week?.week_start ? formatWeekLabel(week.week_start) : 'esta semana');
+
+      // Publicar: draft -> ready
+      const { error } = await supabase
+        .from('workouts')
+        .update({ status: 'ready' })
+        .eq('student_id', student.id)
+        .eq('week_id', selectedWeekId)
+        .eq('status', 'draft');
+
+      if (error) throw new Error(error.message);
+
+      await loadWorkoutsForWeek(selectedWeekId);
+      await loadWeekWorkoutCounts(student.id);
+
+      const msg = `Treinos liberados (${weekLabel}) ✅\n\nAcesse seu Portal:\n${url}`;
+      if (navigator.share) {
+        await navigator.share({ title: 'Treinos liberados', text: msg, url });
+        setBanner('Semana publicada. Abrindo compartilhamento…');
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(msg);
+        setBanner('Semana publicada. Mensagem copiada para enviar no WhatsApp.');
+      } else {
+        window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+        setBanner('Semana publicada. Abrindo WhatsApp…');
+      }
+    } catch (e: any) {
+      setBanner(e?.message || 'Não foi possível publicar a semana.');
+    }
+  }
+
+  function openWorkoutPreviewQA(workoutId: string) {
+    if (!student?.portal_token) {
+      setBanner('Gere o acesso do Portal primeiro (Compartilhar acesso).');
+      return;
+    }
+    const url = `/p/${studentSlug}/workouts/${workoutId}?t=${encodeURIComponent(student.portal_token)}&preview=1`;
+    window.open(url, '_blank');
   }
 
   // Load student
@@ -417,6 +422,9 @@ export default function StudentTrainerPage() {
   const readyCount = workouts.filter((x) => x.status === 'ready').length;
   const draftCount = workouts.filter((x) => x.status === 'draft').length;
 
+  const completedCount = workouts.filter((w) => latestExecByWorkout[w.id]?.status === 'completed').length;
+  const pendingCount = Math.max(0, readyCount - completedCount);
+
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
       <div className="mx-auto max-w-3xl space-y-4">
@@ -429,6 +437,33 @@ export default function StudentTrainerPage() {
               <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">
                 Ritmo P1k: <span className="font-semibold">{formatPace(student?.p1k_sec_per_km ?? null)}</span>
               </div>
+
+              <div className="mt-3 flex flex-col sm:flex-row gap-2">
+                <button
+                  className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
+                  onClick={sharePortalAccess}
+                >
+                  Compartilhar acesso (Portal)
+                </button>
+
+                <button
+                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
+                  disabled={!selectedWeekId}
+                  onClick={publishWeekAndNotify}
+                >
+                  Publicar semana
+                </button>
+              </div>
+
+              {student?.portal_token ? (
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Portal configurado ✅
+                </div>
+              ) : (
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Portal ainda não configurado (use “Compartilhar acesso”).
+                </div>
+              )}
             </div>
 
             <div className="shrink-0 flex flex-col items-end gap-2">
@@ -505,10 +540,12 @@ export default function StudentTrainerPage() {
               <h2 className="font-semibold">Treinos da semana</h2>
               <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 Programados: <span className="font-semibold">{plannedCount}</span> · Disponíveis:{' '}
-                <span className="font-semibold">{readyCount}</span> · Rascunhos: <span className="font-semibold">{draftCount}</span>
+                <span className="font-semibold">{readyCount}</span> · Concluídos:{' '}
+                <span className="font-semibold">{completedCount}</span> · Pendentes:{' '}
+                <span className="font-semibold">{pendingCount}</span> · Rascunhos:{' '}
+                <span className="font-semibold">{draftCount}</span>
               </div>
             </div>
-            {/* removido "Mostrando até 200" */}
           </div>
 
           {workouts.length === 0 ? (
@@ -518,13 +555,11 @@ export default function StudentTrainerPage() {
               {workouts.map((w) => {
                 const latestExec = latestExecByWorkout[w.id] ?? null;
 
-                // boolean SEM null (para não quebrar TS)
                 const locked =
                   !!w.locked_at || latestExec?.status === 'in_progress' || latestExec?.status === 'completed';
 
                 const planned = w.planned_date ? `Planejado: ${formatDateBR(w.planned_date)}` : w.planned_day ? `Dia: ${w.planned_day}` : '';
-
-                const templateLabel = TEMPLATE_LABEL[w.template_type ?? ''] ?? 'Rodagem';
+                const templateLabel = TEMPLATE_LABEL[w.template_type ?? ''] ?? (w.template_type || 'Treino');
 
                 const progress =
                   latestExec?.status === 'completed'
@@ -570,26 +605,13 @@ export default function StudentTrainerPage() {
                         </button>
 
                         <button
-                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold whitespace-nowrap disabled:opacity-50"
-                          disabled={w.status === 'archived'}
-                          onClick={() => shareWorkoutLink(w.id)}
-                        >
-                          Gerar/Compartilhar
-                        </button>
-
-                        <button
                           className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold whitespace-nowrap disabled:opacity-50"
-                          disabled={!w.share_slug}
-                          onClick={() => openWorkoutAsAluno(w)}
+                          disabled={!student?.portal_token}
+                          onClick={() => openWorkoutPreviewQA(w.id)}
                         >
                           Ver como aluno
                         </button>
                       </div>
-                    </div>
-
-                    {/* Removido URL do link (não é clicável) */}
-                    <div className="text-xs text-slate-500 dark:text-slate-400 mt-2">
-                      {w.share_slug ? 'Link gerado.' : 'Link ainda não gerado.'}
                     </div>
 
                     {w.closed_reason ? (
