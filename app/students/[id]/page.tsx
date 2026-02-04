@@ -114,15 +114,36 @@ function formatDateBR(dateStr?: string | null) {
   return `${d}/${m}/${y}`;
 }
 
+/**
+ * Gera token URL-safe sem depender de ES2015 iterator/spread no Uint8Array,
+ * e sem regex com "/" (evita erro de parse acidental).
+ */
 function generateTokenBase64Url(bytes = 24) {
   const arr = new Uint8Array(bytes);
-  crypto.getRandomValues(arr);
+
+  // Gera bytes aleatórios (fallback para ambientes sem crypto)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(arr);
+  } else {
+    for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
+  }
 
   // Evita spread/iteração de Uint8Array (compatível com target mais baixo no TS)
   let binary = '';
   for (let i = 0; i < arr.length; i++) {
     binary += String.fromCharCode(arr[i]);
- }
+  }
+
+  const base64 = btoa(binary);
+
+  // Base64URL (sem regex com "/")
+  return base64
+    .split('+')
+    .join('-')
+    .split('/')
+    .join('_')
+    .replace(/=+$/g, '');
+}
 
 export default function StudentTrainerPage() {
   const router = useRouter();
@@ -418,7 +439,7 @@ export default function StudentTrainerPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWeekId]);
 
-  const selectedWeek = weeks.find((w) => w.id === selectedWeekId) || null;
+  const selectedWeek = weeks.find((w) => w.id === w.id && w.id === selectedWeekId) || null;
   const visWeeks = visibleWeeks();
 
   const plannedCount = workouts.length;
@@ -459,9 +480,7 @@ export default function StudentTrainerPage() {
               </div>
 
               {student?.portal_token ? (
-                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Portal configurado ✅
-                </div>
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">Portal configurado ✅</div>
               ) : (
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   Portal ainda não configurado (use “Compartilhar acesso”).
@@ -558,10 +577,13 @@ export default function StudentTrainerPage() {
               {workouts.map((w) => {
                 const latestExec = latestExecByWorkout[w.id] ?? null;
 
-                const locked =
-                  !!w.locked_at || latestExec?.status === 'in_progress' || latestExec?.status === 'completed';
+                const locked = !!w.locked_at || latestExec?.status === 'in_progress' || latestExec?.status === 'completed';
 
-                const planned = w.planned_date ? `Planejado: ${formatDateBR(w.planned_date)}` : w.planned_day ? `Dia: ${w.planned_day}` : '';
+                const planned = w.planned_date
+                  ? `Planejado: ${formatDateBR(w.planned_date)}`
+                  : w.planned_day
+                  ? `Dia: ${w.planned_day}`
+                  : '';
                 const templateLabel = TEMPLATE_LABEL[w.template_type ?? ''] ?? (w.template_type || 'Treino');
 
                 const progress =
