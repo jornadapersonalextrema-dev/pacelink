@@ -117,9 +117,12 @@ function formatDateBR(dateStr?: string | null) {
 function generateTokenBase64Url(bytes = 24) {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
-  const b64 = btoa(String.fromCharCode(...arr));
-  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
+
+  // Evita spread/iteração de Uint8Array (compatível com target mais baixo no TS)
+  let binary = '';
+  for (let i = 0; i < arr.length; i++) {
+    binary += String.fromCharCode(arr[i]);
+ }
 
 export default function StudentTrainerPage() {
   const router = useRouter();
