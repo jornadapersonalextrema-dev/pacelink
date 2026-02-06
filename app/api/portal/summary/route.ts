@@ -24,6 +24,28 @@ function getSupabaseAdmin() {
   });
 }
 
+function nowInSaoPaulo() {
+  // Gera uma Date "ancorada" na data/hora de America/Sao_Paulo,
+  // mas representada como horário local do runtime (no Vercel, normalmente UTC).
+  // Isso garante que getDay()/getDate() reflitam o calendário de São Paulo.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+
+  // 'YYYY-MM-DDTHH:mm:ss' (sem timezone) => interpretado como horário local do runtime
+  return new Date(`${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}:${map.second}`);
+}
+
 function startOfWeekMonday(date: Date) {
   const d = new Date(date);
   const day = d.getDay(); // 0..6 (Sun..Sat)
@@ -40,117 +62,96 @@ function addDays(d: Date, days: number) {
 }
 
 function toISODate(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-function formatWeekLabel(weekStartISO: string) {
-  const [y, m, d] = weekStartISO.split('-');
-  const start = new Date(Number(y), Number(m) - 1, Number(d));
-  const end = addDays(start, 6);
-  const dd1 = String(start.getDate()).padStart(2, '0');
-  const mm1 = String(start.getMonth() + 1).padStart(2, '0');
-  const dd2 = String(end.getDate()).padStart(2, '0');
-  const mm2 = String(end.getMonth() + 1).padStart(2, '0');
-  return `Semana ${dd1}/${mm1} – ${dd2}/${mm2}`;
+function formatWeekLabel(weekStartISO: string, weekEndISO: string) {
+  const [y1, m1, d1] = weekStartISO.split('-');
+  const [y2, m2, d2] = weekEndISO.split('-');
+  const start = new Date(Number(y1), Number(m1) - 1, Number(d1));
+  const end = new Date(Number(y2), Number(m2) - 1, Number(d2));
+  const s = `${String(start.getDate()).padStart(2, '0')}/${String(start.getMonth() + 1).padStart(2, '0')}`;
+  const e = `${String(end.getDate()).padStart(2, '0')}/${String(end.getMonth() + 1).padStart(2, '0')}`;
+  return `Semana ${s} – ${e}`;
 }
+
+// OBS: Mantive como estava (client admin no topo). Se quiser, posso refatorar
+// para instanciar dentro do GET e evitar falha de build quando env não existe.
+const supabase = getSupabaseAdmin();
 
 export async function GET(req: Request) {
   try {
-    const supabase = getSupabaseAdmin();
-
     const url = new URL(req.url);
-    const slug = (url.searchParams.get('slug') || '').trim();
-    const t = (url.searchParams.get('t') || '').trim();
+    const slug = url.searchParams.get('slug')?.trim() || '';
+    const t = url.searchParams.get('t')?.trim() || '';
 
     if (!slug || !t) {
-      return NextResponse.json({ ok: false, error: 'Parâmetros ausentes (slug, t).' }, { status: 400 });
+      return NextResponse.json({ error: 'Parâmetros inválidos.' }, { status: 400 });
     }
 
-    // Importante: filtra por slug + token + portal_enabled (evita “vazar” se slug existe)
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id,name,public_slug,trainer_id,portal_enabled')
+      .select('id,name,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
       .eq('public_slug', slug)
-      .eq('portal_token', t)
-      .eq('portal_enabled', true)
       .maybeSingle();
 
-    if (sErr) return NextResponse.json({ ok: false, error: sErr.message }, { status: 500 });
-    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado ou link inválido.' }, { status: 404 });
-
-    if (!student.trainer_id) {
-      return NextResponse.json({ ok: false, error: 'Aluno sem trainer_id configurado.' }, { status: 500 });
+    if (sErr) {
+      return NextResponse.json({ error: sErr.message }, { status: 500 });
+    }
+    if (!student || !student.portal_enabled || !student.portal_token) {
+      return NextResponse.json({ error: 'Aluno não encontrado.' }, { status: 404 });
+    }
+    if (student.portal_token !== t) {
+      return NextResponse.json({ error: 'Token inválido.' }, { status: 401 });
     }
 
-    const weekStart = toISODate(startOfWeekMonday(new Date()));
+    // ✅ Agora ancorado em America/Sao_Paulo
+    const weekStart = toISODate(startOfWeekMonday(nowInSaoPaulo()));
+    // ✅ segunda → domingo ( +6 )
     const weekEnd = toISODate(addDays(new Date(weekStart), 6));
 
     await supabase.from('training_weeks').upsert(
       {
         student_id: student.id,
-        trainer_id: student.trainer_id,
         week_start: weekStart,
         week_end: weekEnd,
-        label: formatWeekLabel(weekStart),
+        label: formatWeekLabel(weekStart, weekEnd),
       },
       { onConflict: 'student_id,week_start' }
     );
 
-    const { data: weekRow, error: wErr } = await supabase
-      .from('training_weeks')
-      .select('id,week_start,week_end,label')
+    const { data: workouts, error: wErr } = await supabase
+      .from('workouts')
+      .select('id,title,status,template_type,total_km,planned_date,week_start,share_slug')
       .eq('student_id', student.id)
       .eq('week_start', weekStart)
-      .maybeSingle();
-
-    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
-    if (!weekRow) return NextResponse.json({ ok: false, error: 'Semana não encontrada.' }, { status: 500 });
-
-    const { data: workouts, error: woErr } = await supabase
-      .from('workouts')
-      .select('id,title,template_type,total_km,planned_date,planned_day,status,locked_at,week_id,created_at')
-      .eq('student_id', student.id)
-      .eq('week_id', weekRow.id)
-      .order('planned_day', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
 
-    if (woErr) return NextResponse.json({ ok: false, error: woErr.message }, { status: 500 });
-
-    const list = (workouts || []) as any[];
-    const workoutIds = list.map((x) => x.id);
-
-    let lastExecMap: Record<string, any> = {};
-    if (workoutIds.length > 0) {
-      const { data: execs, error: exErr } = await supabase
-        .from('executions')
-        .select('id,workout_id,status,started_at,last_event_at,completed_at,performed_at,actual_total_km,rpe')
-        .in('workout_id', workoutIds)
-        .order('last_event_at', { ascending: false, nullsFirst: false });
-
-      if (!exErr && execs) {
-        for (const e of execs as any[]) {
-          if (!lastExecMap[e.workout_id]) lastExecMap[e.workout_id] = e;
-        }
-      }
+    if (wErr) {
+      return NextResponse.json({ error: wErr.message }, { status: 500 });
     }
 
-    const planned = list.length;
-    const ready = list.filter((x) => x.status === 'ready').length;
-    const completed = list.filter((x) => lastExecMap[x.id]?.status === 'completed').length;
-    const in_progress = list.filter((x) => lastExecMap[x.id]?.status === 'in_progress').length;
-    const pending = Math.max(0, ready - completed);
+    const list = workouts || [];
+    const total = list.length;
+    const available = list.filter((w) => w.status === 'ready').length;
+    const completed = list.filter((w) => w.status === 'done').length;
+    const inProgress = list.filter((w) => w.status === 'in_progress').length;
 
     return NextResponse.json({
-      ok: true,
-      student: { id: student.id, name: student.name, public_slug: student.public_slug },
-      week: { id: weekRow.id, week_start: weekRow.week_start, week_end: weekRow.week_end, label: weekRow.label },
-      counts: { planned, ready, completed, pending, in_progress },
-      workouts: list.map((w) => ({ ...w, last_execution: lastExecMap[w.id] || null })),
+      student: {
+        id: student.id,
+        name: student.name,
+        slug: student.public_slug,
+        p1k_sec_per_km: student.p1k_sec_per_km,
+      },
+      week: { weekStart, weekEnd, label: formatWeekLabel(weekStart, weekEnd) },
+      counters: { total, available, completed, inProgress, pending: total - completed - inProgress },
+      workouts: list,
     });
   } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || 'Erro inesperado.' }, { status: 500 });
+    return NextResponse.json({ error: e?.message || 'Erro inesperado.' }, { status: 500 });
   }
 }

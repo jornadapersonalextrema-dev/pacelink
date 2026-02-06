@@ -19,8 +19,7 @@ type StudentRow = {
 type WeekRow = {
   id: string;
   student_id: string;
-  trainer_id: string;
-  week_start: string; // YYYY-MM-DD
+  week_start: string;
   week_end: string | null;
   label: string | null;
 };
@@ -28,53 +27,51 @@ type WeekRow = {
 type WorkoutRow = {
   id: string;
   student_id: string;
-  trainer_id: string;
-  week_id: string | null;
-  status: 'draft' | 'ready' | 'archived';
-  template_type: string | null;
-  title: string | null;
-  total_km: number | null;
+  week_start: string | null;
   planned_date: string | null;
-  planned_day: number | null;
-  created_at: string | null;
-  locked_at: string | null;
-  closed_reason: string | null;
-};
-
-type ExecutionRow = {
-  id: string;
-  workout_id: string;
-  status: string;
-  started_at: string | null;
-  last_event_at: string | null;
-  completed_at: string | null;
-  performed_at: string | null;
-  total_elapsed_ms: number | null;
-  rpe: number | null;
-  comment: string | null;
-  actual_total_km: number | null;
+  title: string | null;
+  status: string | null;
+  template_type: string | null;
+  total_km: number | null;
+  share_slug: string | null;
 };
 
 const TEMPLATE_LABEL: Record<string, string> = {
   easy_run: 'Rodagem',
-  progressive: 'Progressivo',
-  alternated: 'Alternado',
+  long_run: 'Longão',
+  intervals: 'Intervalado',
+  tempo_run: 'Tempo',
+  recovery: 'Recuperação',
+  race: 'Prova',
 };
+
+function nowInSaoPaulo() {
+  // Mantém o calendário (dia/semana) ancorado em America/Sao_Paulo,
+  // mesmo se o dispositivo estiver em outro fuso.
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+
+  return new Date(`${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}:${map.second}`);
+}
 
 function startOfWeekMonday(date: Date) {
   const d = new Date(date);
   const day = d.getDay(); // 0..6 (Sun..Sat)
-  const diff = (day === 0 ? -6 : 1) - day; // move to Monday
+  const diff = (day === 0 ? -6 : 1) - day; // Monday
   d.setDate(d.getDate() + diff);
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-function toISODate(d: Date) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
 }
 
 function addDays(d: Date, days: number) {
@@ -83,572 +80,531 @@ function addDays(d: Date, days: number) {
   return x;
 }
 
-function formatWeekLabel(weekStartISO: string) {
-  const [y, m, d] = weekStartISO.split('-');
-  const start = new Date(Number(y), Number(m) - 1, Number(d));
-  const end = addDays(start, 6);
-  const dd1 = String(start.getDate()).padStart(2, '0');
-  const mm1 = String(start.getMonth() + 1).padStart(2, '0');
-  const dd2 = String(end.getDate()).padStart(2, '0');
-  const mm2 = String(end.getMonth() + 1).padStart(2, '0');
-  return `Semana ${dd1}/${mm1} – ${dd2}/${mm2}`;
+function toISODate(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 }
 
-function formatPace(secPerKm: number | null) {
-  if (!secPerKm || !Number.isFinite(secPerKm)) return '—';
-  const mm = Math.floor(secPerKm / 60);
-  const ss = Math.round(secPerKm % 60);
-  return `${mm}:${String(ss).padStart(2, '0')}/km`;
+function formatWeekLabel(weekStartISO: string, weekEndISO: string) {
+  const [y1, m1, d1] = weekStartISO.split('-');
+  const [y2, m2, d2] = weekEndISO.split('-');
+  const start = new Date(Number(y1), Number(m1) - 1, Number(d1));
+  const end = new Date(Number(y2), Number(m2) - 1, Number(d2));
+  const s = `${String(start.getDate()).padStart(2, '0')}/${String(start.getMonth() + 1).padStart(2, '0')}`;
+  const e = `${String(end.getDate()).padStart(2, '0')}/${String(end.getMonth() + 1).padStart(2, '0')}`;
+  return `Semana ${s} – ${e}`;
 }
 
-function formatKm(n: number | null) {
-  if (n == null || !Number.isFinite(n)) return '—';
-  return `${String(n).replace('.', ',')} km`;
-}
-
-function formatDateBR(dateStr?: string | null) {
-  if (!dateStr) return '';
-  const parts = dateStr.split('-');
-  if (parts.length !== 3) return dateStr;
-  const [y, m, d] = parts;
+function formatDateBR(iso: string) {
+  const [y, m, d] = iso.split('-');
   return `${d}/${m}/${y}`;
 }
 
-/**
- * Gera token URL-safe sem depender de ES2015 iterator/spread no Uint8Array,
- * e sem regex com "/" (evita erro de parse acidental).
- */
-function generateTokenBase64Url(bytes = 24) {
-  const arr = new Uint8Array(bytes);
-
-  // Gera bytes aleatórios (fallback para ambientes sem crypto)
-  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
-    crypto.getRandomValues(arr);
-  } else {
-    for (let i = 0; i < arr.length; i++) arr[i] = Math.floor(Math.random() * 256);
-  }
-
-  // Evita spread/iteração de Uint8Array (compatível com target mais baixo no TS)
-  let binary = '';
-  for (let i = 0; i < arr.length; i++) {
-    binary += String.fromCharCode(arr[i]);
-  }
-
-  const base64 = btoa(binary);
-
-  // Base64URL (sem regex com "/")
-  return base64
-    .split('+')
-    .join('-')
-    .split('/')
-    .join('_')
-    .replace(/=+$/g, '');
+function p1kToLabel(sec: number | null) {
+  if (!sec || sec <= 0) return '—';
+  const mm = Math.floor(sec / 60);
+  const ss = Math.round(sec % 60);
+  return `${mm}:${String(ss).padStart(2, '0')}/km`;
 }
 
-export default function StudentTrainerPage() {
-  const router = useRouter();
-  const searchParams = useSearchParams();
+export default function StudentPage() {
   const params = useParams<{ id: string }>();
-  const studentId = params.id;
+  const router = useRouter();
+  const search = useSearchParams();
 
+  const studentId = params?.id;
   const supabase = useMemo(() => createClient(), []);
-  const [banner, setBanner] = useState<string | null>(null);
 
+  const [loading, setLoading] = useState(true);
   const [student, setStudent] = useState<StudentRow | null>(null);
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
-  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
-
+  const [selectedWeekStart, setSelectedWeekStart] = useState<string | null>(null);
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
-  const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
-  const [weekWorkoutCounts, setWeekWorkoutCounts] = useState<Record<string, number>>({});
+  const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const view = searchParams.get('view');
-  const showHistory = view === 'history';
+  // ✅ Semana atual baseada em America/Sao_Paulo (segunda→domingo)
+  const currentWeekStartISO = useMemo(() => {
+    return toISODate(startOfWeekMonday(nowInSaoPaulo()));
+  }, []);
 
-  const currentWeekStartISO = useMemo(() => toISODate(startOfWeekMonday(new Date())), []);
-  const studentSlug = student?.public_slug ?? 'aluno';
+  const visibleWeeks = useMemo(() => {
+    return weeks
+      .filter((w) => w.week_start >= currentWeekStartISO)
+      .sort((a, b) => a.week_start.localeCompare(b.week_start));
+  }, [weeks, currentWeekStartISO]);
 
-  function visibleWeeks() {
-    if (!weeks.length) return [];
-    if (!showHistory) {
-      return weeks.filter((w) => w.week_start >= currentWeekStartISO);
-    }
+  const historyWeeks = useMemo(() => {
     return weeks
       .filter((w) => w.week_start < currentWeekStartISO)
-      .filter((w) => (weekWorkoutCounts[w.id] ?? 0) > 0);
-  }
+      .sort((a, b) => b.week_start.localeCompare(a.week_start));
+  }, [weeks, currentWeekStartISO]);
 
-  async function loadStudent() {
-    setBanner(null);
-    const { data, error } = await supabase
+  const selectedWeek = useMemo(() => {
+    if (!selectedWeekStart) return null;
+    return weeks.find((w) => w.week_start === selectedWeekStart) || null;
+  }, [weeks, selectedWeekStart]);
+
+  async function fetchAll() {
+    if (!studentId) return;
+
+    setLoading(true);
+    setMsg(null);
+
+    const { data: s, error: sErr } = await supabase
       .from('students')
       .select('id,trainer_id,name,email,p1k_sec_per_km,public_slug,created_at,portal_token,portal_enabled')
       .eq('id', studentId)
       .maybeSingle();
 
-    if (error) {
-      setBanner(error.message);
+    if (sErr) {
+      setMsg({ type: 'err', text: sErr.message });
+      setLoading(false);
       return;
     }
-    if (!data) {
-      setBanner('Aluno não encontrado.');
+    if (!s) {
+      setMsg({ type: 'err', text: 'Aluno não encontrado.' });
+      setLoading(false);
       return;
     }
-    setStudent(data as any);
+    setStudent(s as StudentRow);
+
+    const { data: wks, error: wErr } = await supabase
+      .from('training_weeks')
+      .select('id,student_id,week_start,week_end,label')
+      .eq('student_id', studentId)
+      .order('week_start', { ascending: true });
+
+    if (wErr) {
+      setMsg({ type: 'err', text: wErr.message });
+      setLoading(false);
+      return;
+    }
+
+    const wkRows = (wks || []) as WeekRow[];
+    setWeeks(wkRows);
+
+    // se não tiver selected, seleciona a semana atual (ou primeira visível)
+    const qsWeek = search?.get('week') || null;
+    const initialWeek =
+      (qsWeek && wkRows.find((x) => x.week_start === qsWeek)?.week_start) ||
+      wkRows.find((x) => x.week_start === currentWeekStartISO)?.week_start ||
+      wkRows.filter((x) => x.week_start >= currentWeekStartISO).sort((a, b) => a.week_start.localeCompare(b.week_start))[0]
+        ?.week_start ||
+      wkRows.sort((a, b) => b.week_start.localeCompare(a.week_start))[0]?.week_start ||
+      null;
+
+    setSelectedWeekStart(initialWeek);
+
+    setLoading(false);
   }
 
-  async function ensureUpcomingWeeks(s: StudentRow) {
-    setBanner(null);
+  async function ensureUpcomingWeeks() {
+    if (!studentId || !student) return;
 
-    const start = startOfWeekMonday(new Date());
-    const starts = Array.from({ length: 10 }).map((_, i) => toISODate(addDays(start, i * 7)));
+    // ✅ Geração de semanas baseada em America/Sao_Paulo (segunda→domingo)
+    const start = startOfWeekMonday(nowInSaoPaulo());
+    const targets: { week_start: string; week_end: string; label: string }[] = [];
 
-    const payload = starts.map((ws) => ({
-      student_id: s.id,
-      trainer_id: s.trainer_id,
-      week_start: ws,
-      week_end: toISODate(addDays(new Date(ws), 6)),
-      label: formatWeekLabel(ws),
+    for (let i = 0; i < 10; i++) {
+      const ws = toISODate(addDays(start, i * 7));
+      const we = toISODate(addDays(new Date(ws), 6)); // segunda→domingo
+      targets.push({ week_start: ws, week_end: we, label: formatWeekLabel(ws, we) });
+    }
+
+    const existing = new Set((weeks || []).map((w) => w.week_start));
+    const missing = targets.filter((t) => !existing.has(t.week_start));
+
+    if (missing.length === 0) return;
+
+    const payload = missing.map((t) => ({
+      student_id: studentId,
+      trainer_id: student.trainer_id,
+      week_start: t.week_start,
+      week_end: t.week_end,
+      label: t.label,
     }));
 
-    const { error: upErr } = await supabase.from('training_weeks').upsert(payload, {
+    const { error } = await supabase.from('training_weeks').upsert(payload, {
       onConflict: 'student_id,week_start',
     });
 
-    if (upErr) {
-      setBanner(upErr.message);
+    if (error) {
+      setMsg({ type: 'err', text: error.message });
       return;
     }
 
-    const { data, error } = await supabase
+    const { data: wks2 } = await supabase
       .from('training_weeks')
-      .select('id,student_id,trainer_id,week_start,week_end,label')
-      .eq('student_id', s.id)
+      .select('id,student_id,week_start,week_end,label')
+      .eq('student_id', studentId)
       .order('week_start', { ascending: true });
 
-    if (error) {
-      setBanner(error.message);
-      return;
-    }
-
-    setWeeks((data || []) as WeekRow[]);
+    setWeeks(((wks2 || []) as WeekRow[]) || []);
   }
 
-  async function loadWeekWorkoutCounts(student_id: string) {
-    const { data, error } = await supabase
-      .from('workouts')
-      .select('week_id')
-      .eq('student_id', student_id)
-      .not('week_id', 'is', null)
-      .limit(2000);
-
-    if (error) return;
-
-    const counts: Record<string, number> = {};
-    (data || []).forEach((row: any) => {
-      const wid = row.week_id as string | null;
-      if (!wid) return;
-      counts[wid] = (counts[wid] ?? 0) + 1;
-    });
-
-    setWeekWorkoutCounts(counts);
-  }
-
-  async function loadWorkoutsForWeek(weekId: string | null) {
-    if (!weekId) {
-      setWorkouts([]);
-      setLatestExecByWorkout({});
-      return;
-    }
-
-    setBanner(null);
-
-    const { data: ws, error } = await supabase
-      .from('workouts')
-      .select(
-        'id, student_id, trainer_id, status, template_type, title, total_km, created_at, planned_date, planned_day, week_id, locked_at, closed_reason'
-      )
-      .eq('student_id', studentId)
-      .eq('week_id', weekId)
-      .order('planned_day', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true })
-      .limit(50);
-
-    if (error) {
-      setBanner(error.message);
-      return;
-    }
-
-    const list = (ws || []) as WorkoutRow[];
-    setWorkouts(list);
-
-    if (list.length === 0) {
-      setLatestExecByWorkout({});
-      return;
-    }
-
-    const ids = list.map((w) => w.id);
-
-    const { data: ex } = await supabase
-      .from('executions')
-      .select('id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km')
-      .in('workout_id', ids)
-      .order('last_event_at', { ascending: false, nullsFirst: false });
-
-    const map: Record<string, ExecutionRow | null> = {};
-    (ex || []).forEach((row: any) => {
-      if (!map[row.workout_id]) {
-        map[row.workout_id] = row as ExecutionRow;
-      }
-    });
-
-    setLatestExecByWorkout(map);
-  }
-
-  function goHistory(flag: boolean) {
-    const url = flag ? `/students/${studentId}?view=history` : `/students/${studentId}`;
-    router.replace(url);
-  }
-
-  async function ensurePortalToken() {
-    if (!student) throw new Error('Aluno não carregado.');
-    if (student.portal_enabled === false) throw new Error('Portal do aluno está desabilitado.');
-
-    if (student.portal_token) return student.portal_token;
-
-    const token = generateTokenBase64Url(24); // ~32 chars url-safe
-    const { data, error } = await supabase
-      .from('students')
-      .update({ portal_token: token, portal_token_created_at: new Date().toISOString(), portal_enabled: true })
-      .eq('id', student.id)
-      .select('portal_token')
-      .maybeSingle();
-
-    if (error) throw new Error(error.message);
-    const saved = (data as any)?.portal_token as string | null;
-    if (!saved) throw new Error('Não foi possível gerar o token do portal.');
-    setStudent((prev) => (prev ? { ...prev, portal_token: saved } : prev));
-    return saved;
-  }
-
-  function portalUrl(token: string) {
-    return `${window.location.origin}/p/${studentSlug}?t=${encodeURIComponent(token)}`;
-  }
-
-  async function sharePortalAccess() {
-    setBanner(null);
-    try {
-      const token = await ensurePortalToken();
-      const url = portalUrl(token);
-      const msg = `Olá! Seus treinos ficam no Portal do PaceLink:\n${url}\n\nA cada semana, seus treinos serão liberados aqui.`;
-
-      if (navigator.share) {
-        await navigator.share({ title: 'PaceLink - Portal do aluno', text: msg, url });
-        setBanner('Abrindo opções de compartilhamento…');
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(msg);
-        setBanner('Mensagem copiada. Cole no WhatsApp.');
-      } else {
-        window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-        setBanner('Abrindo WhatsApp…');
-      }
-    } catch (e: any) {
-      setBanner(e?.message || 'Não foi possível compartilhar o acesso.');
-    }
-  }
-
-  async function publishWeekAndNotify() {
-    setBanner(null);
-    try {
-      if (!selectedWeekId) throw new Error('Selecione uma semana.');
-      if (!student) throw new Error('Aluno não carregado.');
-
-      const token = await ensurePortalToken();
-      const url = portalUrl(token);
-      const week = weeks.find((w) => w.id === selectedWeekId);
-      const weekLabel = week?.label || (week?.week_start ? formatWeekLabel(week.week_start) : 'esta semana');
-
-      // Publicar: draft -> ready
-      const { error } = await supabase
-        .from('workouts')
-        .update({ status: 'ready' })
-        .eq('student_id', student.id)
-        .eq('week_id', selectedWeekId)
-        .eq('status', 'draft');
-
-      if (error) throw new Error(error.message);
-
-      await loadWorkoutsForWeek(selectedWeekId);
-      await loadWeekWorkoutCounts(student.id);
-
-      const msg = `Treinos liberados (${weekLabel}) ✅\n\nAcesse seu Portal:\n${url}`;
-      if (navigator.share) {
-        await navigator.share({ title: 'Treinos liberados', text: msg, url });
-        setBanner('Semana publicada. Abrindo compartilhamento…');
-      } else if (navigator.clipboard) {
-        await navigator.clipboard.writeText(msg);
-        setBanner('Semana publicada. Mensagem copiada para enviar no WhatsApp.');
-      } else {
-        window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-        setBanner('Semana publicada. Abrindo WhatsApp…');
-      }
-    } catch (e: any) {
-      setBanner(e?.message || 'Não foi possível publicar a semana.');
-    }
-  }
-
-  function openWorkoutPreviewQA(workoutId: string) {
-    if (!student?.portal_token) {
-      setBanner('Gere o acesso do Portal primeiro (Compartilhar acesso).');
-      return;
-    }
-    const url = `/p/${studentSlug}/workouts/${workoutId}?t=${encodeURIComponent(student.portal_token)}&preview=1`;
-    window.open(url, '_blank');
-  }
-
-  // Load student
-  useEffect(() => {
+  async function fetchWorkoutsForWeek(weekStart: string) {
     if (!studentId) return;
-    loadStudent();
+    const { data, error } = await supabase
+      .from('workouts')
+      .select('id,student_id,week_start,planned_date,title,status,template_type,total_km,share_slug')
+      .eq('student_id', studentId)
+      .eq('week_start', weekStart)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      setMsg({ type: 'err', text: error.message });
+      return;
+    }
+    setWorkouts((data || []) as WorkoutRow[]);
+  }
+
+  useEffect(() => {
+    fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [studentId]);
 
-  // Ensure weeks after student loaded
   useEffect(() => {
-    if (!student) return;
-    ensureUpcomingWeeks(student);
-    loadWeekWorkoutCounts(student.id);
+    if (student) ensureUpcomingWeeks();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [student?.id]);
 
-  // Ajusta week selecionada para sempre ser uma das visíveis
   useEffect(() => {
-    const vis = visibleWeeks();
-    if (vis.length === 0) {
-      setSelectedWeekId(null);
+    if (selectedWeekStart) fetchWorkoutsForWeek(selectedWeekStart);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWeekStart]);
+
+  async function ensurePortalToken() {
+    if (!student) return null;
+
+    if (student.portal_enabled && student.portal_token && student.public_slug) {
+      return { token: student.portal_token, slug: student.public_slug };
+    }
+
+    const { data, error } = await supabase
+      .from('students')
+      .update({ portal_enabled: true })
+      .eq('id', student.id)
+      .select('portal_token,public_slug')
+      .maybeSingle();
+
+    if (error) {
+      setMsg({ type: 'err', text: error.message });
+      return null;
+    }
+
+    const token = (data as any)?.portal_token || student.portal_token;
+    const slug = (data as any)?.public_slug || student.public_slug;
+
+    if (!token || !slug) {
+      setMsg({ type: 'err', text: 'Não foi possível habilitar o portal (token/slug ausentes).' });
+      return null;
+    }
+
+    // atualiza state
+    setStudent((prev) =>
+      prev ? { ...prev, portal_enabled: true, portal_token: token, public_slug: slug } : prev
+    );
+
+    return { token, slug };
+  }
+
+  async function sharePortalAccess() {
+    if (!student) return;
+    setBusy(true);
+    setMsg(null);
+
+    const p = await ensurePortalToken();
+    if (!p) {
+      setBusy(false);
       return;
     }
-    const stillValid = selectedWeekId && vis.some((w) => w.id === selectedWeekId);
-    if (!stillValid) setSelectedWeekId(vis[0].id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weeks, weekWorkoutCounts, showHistory]);
 
-  // Load workouts when week changes
-  useEffect(() => {
-    loadWorkoutsForWeek(selectedWeekId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedWeekId]);
+    const fullUrl = `${window.location.origin}/p/${p.slug}?t=${encodeURIComponent(p.token)}`;
 
-  const selectedWeek = weeks.find((w) => w.id === w.id && w.id === selectedWeekId) || null;
-  const visWeeks = visibleWeeks();
+    const text =
+      `Olá! Seus treinos da semana já estão disponíveis no Portal.\n\n` +
+      `Acesse por este link (guarde nos favoritos):\n${fullUrl}\n\n` +
+      `Qualquer dúvida, me chame.`;
 
-  const plannedCount = workouts.length;
-  const readyCount = workouts.filter((x) => x.status === 'ready').length;
-  const draftCount = workouts.filter((x) => x.status === 'draft').length;
+    try {
+      if ((navigator as any).share) {
+        await (navigator as any).share({ title: 'Portal do Aluno', text, url: fullUrl });
+        setMsg({ type: 'ok', text: 'Link compartilhado.' });
+      } else {
+        await navigator.clipboard.writeText(text);
+        setMsg({ type: 'ok', text: 'Mensagem copiada. Cole no WhatsApp.' });
+      }
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text);
+        setMsg({ type: 'ok', text: 'Mensagem copiada. Cole no WhatsApp.' });
+      } catch {
+        setMsg({ type: 'err', text: 'Não foi possível compartilhar/copiar.' });
+      }
+    }
 
-  const completedCount = workouts.filter((w) => latestExecByWorkout[w.id]?.status === 'completed').length;
-  const pendingCount = Math.max(0, readyCount - completedCount);
+    setBusy(false);
+  }
+
+  async function publishWeekAndNotify() {
+    if (!student || !selectedWeekStart) return;
+    setBusy(true);
+    setMsg(null);
+
+    const { error } = await supabase
+      .from('workouts')
+      .update({ status: 'ready' })
+      .eq('student_id', student.id)
+      .eq('week_start', selectedWeekStart)
+      .eq('status', 'draft');
+
+    if (error) {
+      setMsg({ type: 'err', text: error.message });
+      setBusy(false);
+      return;
+    }
+
+    await fetchWorkoutsForWeek(selectedWeekStart);
+    setMsg({ type: 'ok', text: 'Semana publicada. Treinos em rascunho viraram disponíveis.' });
+    setBusy(false);
+  }
+
+  function workoutStatusLabel(status: string | null) {
+    if (status === 'draft') return 'Rascunho';
+    if (status === 'ready') return 'Disponível';
+    if (status === 'in_progress') return 'Em andamento';
+    if (status === 'done') return 'Concluído';
+    return status || '—';
+  }
+
+  const counters = useMemo(() => {
+    const total = workouts.length;
+    const drafts = workouts.filter((w) => w.status === 'draft').length;
+    const ready = workouts.filter((w) => w.status === 'ready').length;
+    const inProgress = workouts.filter((w) => w.status === 'in_progress').length;
+    const done = workouts.filter((w) => w.status === 'done').length;
+    return { total, drafts, ready, inProgress, done };
+  }, [workouts]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-[#07160f] text-white flex items-center justify-center">
+        <div className="opacity-80">Carregando...</div>
+      </div>
+    );
+  }
+
+  if (!student) {
+    return (
+      <div className="min-h-screen bg-[#07160f] text-white flex items-center justify-center">
+        <div className="opacity-80">Aluno não encontrado.</div>
+      </div>
+    );
+  }
 
   return (
-    <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
-      <div className="mx-auto max-w-3xl space-y-4">
-        {/* Cabeçalho aluno */}
-        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm text-slate-600 dark:text-slate-300">Aluno</div>
-              <div className="mt-1 text-2xl font-extrabold leading-tight break-words">{student?.name ?? '—'}</div>
-              <div className="mt-2 text-sm text-slate-600 dark:text-slate-300">
-                Ritmo P1k: <span className="font-semibold">{formatPace(student?.p1k_sec_per_km ?? null)}</span>
-              </div>
-
-              <div className="mt-3 flex flex-col sm:flex-row gap-2">
-                <button
-                  className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
-                  onClick={sharePortalAccess}
-                >
-                  Compartilhar acesso (Portal)
-                </button>
-
-                <button
-                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-                  disabled={!selectedWeekId}
-                  onClick={publishWeekAndNotify}
-                >
-                  Publicar semana
-                </button>
-              </div>
-
-              {student?.portal_token ? (
-                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">Portal configurado ✅</div>
-              ) : (
-                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Portal ainda não configurado (use “Compartilhar acesso”).
-                </div>
-              )}
-            </div>
-
-            <div className="shrink-0 flex flex-col items-end gap-2">
-              <button
-                className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-                disabled={!selectedWeekId}
-                onClick={() => router.push(`/students/${studentId}/workouts/new?weekId=${selectedWeekId}`)}
-              >
-                + Programar treino
-              </button>
-              <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.push('/students')}>
-                Voltar
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {banner && (
-          <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">{banner}</div>
-        )}
-
-        {/* Semanas */}
-        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-          <div className="flex items-center justify-between mb-3 gap-3">
+    <div className="min-h-screen bg-[#07160f] text-white">
+      <div className="max-w-2xl mx-auto px-4 py-6">
+        <div className="rounded-2xl bg-white/5 border border-white/10 p-5 shadow-xl">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-semibold">Planejamento por semana</h2>
-              <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">{selectedWeek ? selectedWeek.label : '—'}</div>
+              <div className="text-sm opacity-80">Aluno</div>
+              <div className="text-2xl font-bold leading-tight">{student.name}</div>
+              <div className="mt-2 text-sm opacity-80">
+                Ritmo P1k: <span className="font-semibold text-white">{p1kToLabel(student.p1k_sec_per_km)}</span>
+              </div>
             </div>
-
-            <div className="flex items-center gap-2">
-              {!showHistory ? (
-                <button
-                  className="text-sm underline text-slate-600 dark:text-slate-300 disabled:opacity-50"
-                  disabled={Object.values(weekWorkoutCounts).every((v) => v === 0)}
-                  onClick={() => goHistory(true)}
-                >
-                  Ver histórico
-                </button>
-              ) : (
-                <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => goHistory(false)}>
-                  Voltar para semanas atuais
-                </button>
-              )}
-            </div>
+            <button
+              className="text-sm underline opacity-90 hover:opacity-100"
+              onClick={() => router.push('/students')}
+            >
+              Voltar
+            </button>
           </div>
 
-          {visWeeks.length === 0 ? (
-            <div className="text-sm text-slate-600 dark:text-slate-300">
-              {showHistory ? 'Sem histórico de semanas com treinos.' : 'Semanas futuras ainda não carregadas.'}
-            </div>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {visWeeks.map((w) => (
-                <button
-                  key={w.id}
-                  className={`px-3 py-2 rounded-full text-sm font-semibold border ${
-                    selectedWeekId === w.id
-                      ? 'bg-primary text-slate-900 border-primary'
-                      : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100'
-                  }`}
-                  onClick={() => setSelectedWeekId(w.id)}
-                >
-                  {w.label ?? formatWeekLabel(w.week_start)}
-                </button>
-              ))}
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              className="rounded-xl bg-[#2ee97a] text-black font-semibold px-4 py-3 shadow hover:brightness-110 disabled:opacity-60"
+              disabled={busy}
+              onClick={sharePortalAccess}
+            >
+              Compartilhar acesso (Portal)
+            </button>
+
+            <button
+              className="rounded-xl bg-white/10 border border-white/10 px-4 py-3 font-semibold hover:bg-white/15 disabled:opacity-60"
+              disabled={busy || !selectedWeekStart}
+              onClick={publishWeekAndNotify}
+            >
+              Publicar semana
+            </button>
+          </div>
+
+          <div className="mt-2 text-sm opacity-80">
+            Portal configurado{' '}
+            {student.portal_enabled ? (
+              <span className="text-[#2ee97a] font-semibold">✓</span>
+            ) : (
+              <span className="text-yellow-300 font-semibold">—</span>
+            )}
+          </div>
+
+          {msg && (
+            <div
+              className={`mt-4 rounded-xl px-4 py-3 border ${
+                msg.type === 'ok'
+                  ? 'bg-[#2ee97a]/10 border-[#2ee97a]/30 text-[#b7ffd2]'
+                  : 'bg-red-500/10 border-red-500/30 text-red-200'
+              }`}
+            >
+              {msg.text}
             </div>
           )}
         </div>
 
-        {/* Treinos da semana */}
-        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
-          <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="mt-6 rounded-2xl bg-white/5 border border-white/10 p-5 shadow-xl">
+          <div className="flex items-center justify-between">
             <div>
-              <h2 className="font-semibold">Treinos da semana</h2>
-              <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                Programados: <span className="font-semibold">{plannedCount}</span> · Disponíveis:{' '}
-                <span className="font-semibold">{readyCount}</span> · Concluídos:{' '}
-                <span className="font-semibold">{completedCount}</span> · Pendentes:{' '}
-                <span className="font-semibold">{pendingCount}</span> · Rascunhos:{' '}
-                <span className="font-semibold">{draftCount}</span>
-              </div>
+              <div className="text-xl font-bold">Planejamento por semana</div>
+              <div className="text-sm opacity-80">{selectedWeek?.label || '—'}</div>
             </div>
+
+            <button
+              className="text-sm underline opacity-90 hover:opacity-100"
+              onClick={() => {
+                const hasHistory = historyWeeks.length > 0;
+                if (!hasHistory) {
+                  setMsg({ type: 'err', text: 'Sem histórico ainda.' });
+                  return;
+                }
+                // toggla para a primeira semana do histórico (mais recente)
+                setSelectedWeekStart(historyWeeks[0].week_start);
+              }}
+            >
+              Ver histórico
+            </button>
           </div>
 
-          {workouts.length === 0 ? (
-            <div className="text-sm text-slate-600 dark:text-slate-300">Nenhum treino programado para esta semana ainda.</div>
-          ) : (
-            <div className="space-y-3">
-              {workouts.map((w) => {
-                const latestExec = latestExecByWorkout[w.id] ?? null;
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            {visibleWeeks.map((w) => (
+              <button
+                key={w.id}
+                className={`rounded-full px-4 py-3 text-sm font-semibold border ${
+                  selectedWeekStart === w.week_start
+                    ? 'bg-[#2ee97a] text-black border-[#2ee97a]'
+                    : 'bg-white/5 border-white/10 hover:bg-white/10'
+                }`}
+                onClick={() => setSelectedWeekStart(w.week_start)}
+              >
+                {w.label || `${formatDateBR(w.week_start)} – ${w.week_end ? formatDateBR(w.week_end) : ''}`}
+              </button>
+            ))}
+          </div>
+        </div>
 
-                const locked = !!w.locked_at || latestExec?.status === 'in_progress' || latestExec?.status === 'completed';
+        <div className="mt-6 rounded-2xl bg-white/5 border border-white/10 p-5 shadow-xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xl font-bold">Treinos da semana</div>
+              <div className="mt-1 text-sm opacity-80">
+                Programados: <span className="font-semibold text-white">{counters.total}</span> · Disponíveis:{' '}
+                <span className="font-semibold text-white">{counters.ready}</span> · Rascunhos:{' '}
+                <span className="font-semibold text-white">{counters.drafts}</span>
+              </div>
+            </div>
 
-                const planned = w.planned_date
-                  ? `Planejado: ${formatDateBR(w.planned_date)}`
-                  : w.planned_day
-                  ? `Dia: ${w.planned_day}`
-                  : '';
-                const templateLabel = TEMPLATE_LABEL[w.template_type ?? ''] ?? (w.template_type || 'Treino');
+            <button
+              className="text-sm underline opacity-90 hover:opacity-100"
+              onClick={() => selectedWeekStart && fetchWorkoutsForWeek(selectedWeekStart)}
+            >
+              Atualizar
+            </button>
+          </div>
 
-                const progress =
-                  latestExec?.status === 'completed'
-                    ? 'Concluído'
-                    : latestExec?.status === 'in_progress'
-                    ? 'Em andamento'
-                    : w.status === 'ready'
-                    ? 'Disponível'
-                    : w.status === 'draft'
-                    ? 'Rascunho'
-                    : 'Arquivado';
-
-                return (
-                  <div key={w.id} className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
-                    <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <div className="text-sm font-semibold break-words">{w.title || 'Treino'}</div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">{templateLabel}</div>
-                          {w.total_km != null ? (
-                            <>
-                              <div className="text-xs text-slate-500 dark:text-slate-400">·</div>
-                              <div className="text-xs text-slate-500 dark:text-slate-400">{formatKm(w.total_km)}</div>
-                            </>
-                          ) : null}
-                        </div>
-
-                        <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                          {planned ? `${planned} · ` : ''}
-                          Status: <span className="font-semibold">{progress}</span>
-                          {locked ? ' · Edição bloqueada após início' : ''}
-                        </div>
+          <div className="mt-4 space-y-4">
+            {workouts.length === 0 ? (
+              <div className="opacity-80">Nenhum treino programado para esta semana ainda.</div>
+            ) : (
+              workouts.map((w) => (
+                <div key={w.id} className="rounded-2xl bg-white/5 border border-white/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-bold text-lg truncate">{w.title || 'Treino'}</div>
+                      <div className="mt-1 text-sm opacity-80">
+                        <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 mr-2">
+                          {TEMPLATE_LABEL[w.template_type || ''] || w.template_type || '—'}
+                        </span>
+                        {w.total_km ? `${String(w.total_km).replace('.', ',')} km` : ''}
                       </div>
-
-                      <div className="w-full sm:w-auto flex flex-col sm:flex-row sm:flex-wrap gap-2 sm:justify-end">
-                        <button
-                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold whitespace-nowrap disabled:opacity-50"
-                          disabled={locked}
-                          onClick={() => router.push(`/workouts/${w.id}/edit`)}
-                        >
-                          Editar
-                        </button>
-
-                        <button
-                          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold whitespace-nowrap disabled:opacity-50"
-                          disabled={!student?.portal_token}
-                          onClick={() => openWorkoutPreviewQA(w.id)}
-                        >
-                          Ver como aluno
-                        </button>
+                      <div className="mt-1 text-sm opacity-80">
+                        Planejado:{' '}
+                        <span className="font-semibold text-white">
+                          {w.planned_date ? formatDateBR(w.planned_date) : '—'}
+                        </span>{' '}
+                        · Status:{' '}
+                        <span className="font-semibold text-white">{workoutStatusLabel(w.status)}</span>
                       </div>
                     </div>
-
-                    {w.closed_reason ? (
-                      <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">Encerrado: {w.closed_reason}</div>
-                    ) : null}
                   </div>
-                );
-              })}
-            </div>
-          )}
+
+                  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <button
+                      className="rounded-xl bg-white/10 border border-white/10 px-4 py-3 font-semibold hover:bg-white/15"
+                      onClick={() => router.push(`/workouts/${w.id}/edit`)}
+                    >
+                      Editar
+                    </button>
+
+                    <button
+                      className="rounded-xl bg-[#2ee97a] text-black font-semibold px-4 py-3 shadow hover:brightness-110"
+                      onClick={async () => {
+                        const p = await ensurePortalToken();
+                        if (!p) return;
+                        const link = `${window.location.origin}/p/${p.slug}/workouts/${w.id}?t=${encodeURIComponent(
+                          p.token
+                        )}`;
+                        const text = `Treino disponível: ${link}`;
+
+                        try {
+                          if ((navigator as any).share) {
+                            await (navigator as any).share({ title: 'Treino', text, url: link });
+                          } else {
+                            await navigator.clipboard.writeText(text);
+                            setMsg({ type: 'ok', text: 'Link copiado.' });
+                          }
+                        } catch {
+                          try {
+                            await navigator.clipboard.writeText(text);
+                            setMsg({ type: 'ok', text: 'Link copiado.' });
+                          } catch {
+                            setMsg({ type: 'err', text: 'Não foi possível copiar/compartilhar.' });
+                          }
+                        }
+                      }}
+                    >
+                      Gerar/Compartilhar
+                    </button>
+
+                    <button
+                      className="rounded-xl bg-white/10 border border-white/10 px-4 py-3 font-semibold hover:bg-white/15"
+                      onClick={async () => {
+                        const p = await ensurePortalToken();
+                        if (!p) return;
+                        router.push(`/p/${p.slug}/workouts/${w.id}?t=${encodeURIComponent(p.token)}`);
+                      }}
+                    >
+                      Ver como aluno
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
-    </main>
+    </div>
   );
 }
