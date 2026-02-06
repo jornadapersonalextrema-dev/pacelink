@@ -2,16 +2,19 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
-function mustEnv(name: string) {
+function getEnv(name: string) {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+  return v && v.trim() ? v.trim() : null;
 }
 
-const supabase = createClient(mustEnv('SUPABASE_URL'), mustEnv('SUPABASE_SERVICE_ROLE_KEY'), {
-  auth: { persistSession: false },
-});
+function getSupabaseAdmin() {
+  const url = getEnv('SUPABASE_URL') || getEnv('NEXT_PUBLIC_SUPABASE_URL');
+  const key = getEnv('SUPABASE_SERVICE_ROLE_KEY');
+  if (!url || !key) throw new Error('Env ausente: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.');
+  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+}
 
 type Body = {
   slug: string;
@@ -37,6 +40,8 @@ function toNumber(v: any): number | null {
 
 export async function POST(req: Request) {
   try {
+    const supabase = getSupabaseAdmin();
+
     const body = (await req.json()) as Body;
 
     const slug = (body.slug || '').trim();
@@ -50,15 +55,14 @@ export async function POST(req: Request) {
 
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id,portal_token,portal_enabled')
+      .select('id')
       .eq('public_slug', slug)
+      .eq('portal_token', t)
+      .eq('portal_enabled', true)
       .maybeSingle();
 
     if (sErr) return NextResponse.json({ ok: false, error: sErr.message }, { status: 500 });
-    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado.' }, { status: 404 });
-
-    if (!student.portal_enabled) return NextResponse.json({ ok: false, error: 'Portal desabilitado.' }, { status: 403 });
-    if (!student.portal_token || student.portal_token !== t) return NextResponse.json({ ok: false, error: 'Acesso inválido.' }, { status: 403 });
+    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado ou link inválido.' }, { status: 404 });
 
     const { data: ex, error: exErr } = await supabase
       .from('executions')
