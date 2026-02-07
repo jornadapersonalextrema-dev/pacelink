@@ -2,547 +2,555 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import Topbar from '../../../../components/Topbar';
 import { createClient } from '../../../../lib/supabaseBrowser';
 
 type StudentRow = {
   id: string;
-  full_name: string;
-  p1k_pace?: string | null;
+  name: string;
+  trainer_id: string;
+  public_slug: string | null;
+  portal_token: string | null;
+  portal_enabled: boolean;
+  p1k_sec_per_km: number | null;
 };
 
 type WeekRow = {
   id: string;
-  week_start: string; // YYYY-MM-DD
-  week_end: string; // YYYY-MM-DD
-  label?: string | null;
+  week_start: string;
+  week_end: string;
+  label: string | null;
 };
 
 type WorkoutRow = {
   id: string;
   student_id: string;
+  trainer_id: string;
   week_id: string | null;
-  title: string;
-  status: 'draft' | 'ready' | 'in_progress' | 'completed' | 'archived';
+  status: 'draft' | 'ready' | 'archived';
   template_type: string;
-  total_km: number | null;
-  planned_date: string | null; // YYYY-MM-DD
-  planned_day: number | null; // 0..6
+  title: string | null;
+  include_warmup: boolean;
   warmup_km: number | null;
-  warmup_enabled: boolean | null;
-  blocks: any[] | null; // jsonb
+  include_cooldown: boolean;
+  cooldown_km: number | null;
+  blocks: any[] | null;
+  total_km: number;
+  locked_at: string | null;
+  created_at: string;
 };
 
 type BlockDraft = {
-  distanceKm: string; // input
+  id: string;
+  distanceKm: string;
   intensity: 'easy' | 'moderate' | 'hard';
-  paceStr: string; // "4:30/km"
-  note: string; // obs
+  paceStr: string; // texto livre (ex: 6:00–6:30/km)
+  note: string;
 };
 
-function parseISODateLocal(iso: string): Date {
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) {
-    const y = Number(m[1]);
-    const mm = Number(m[2]);
-    const d = Number(m[3]);
-    return new Date(y, mm - 1, d, 12, 0, 0);
-  }
-  return new Date(iso);
+function pad2(n: number) {
+  return String(n).padStart(2, '0');
 }
 
-function formatBR(iso?: string | null) {
+function formatBR(iso: string | null) {
   if (!iso) return '—';
-  return parseISODateLocal(iso).toLocaleDateString('pt-BR');
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return String(iso);
+  return `${d}/${m}/${y}`;
 }
 
-function templateLabel(template: string): string {
-  const map: Record<string, string> = {
-    easy_run: 'Rodagem',
-    interval_run: 'Intervalado',
-    progressive_run: 'Progressivo',
-    alternated_run: 'Alternado',
-    long_run: 'Longão',
-    race: 'Prova',
-    recovery: 'Recuperação',
-  };
-  return map[template] || template;
+function kmLabel(km: number | null) {
+  if (km == null) return '';
+  return Number(km).toFixed(1).replace('.', ',');
 }
 
-export default function EditWorkoutPage() {
+function parseKm(v: string) {
+  const n = Number(String(v || '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function sumBlocksKm(blocks: BlockDraft[]) {
+  return blocks.reduce((acc, b) => acc + (b.distanceKm.trim() ? parseKm(b.distanceKm) : 0), 0);
+}
+
+function formatPace(secPerKm: number | null) {
+  if (!secPerKm || !Number.isFinite(secPerKm)) return '';
+  const total = Math.max(0, Math.floor(secPerKm));
+  const mm = Math.floor(total / 60);
+  const ss = total % 60;
+  return `${mm}:${ss.toString().padStart(2, '0')}/km`;
+}
+
+function suggestedPaceByIntensity(p1k: number | null, intensity: BlockDraft['intensity']) {
+  if (!p1k || !Number.isFinite(p1k)) return '';
+  const base = p1k;
+
+  // heurística simples (ajuste depois se quiser):
+  // easy: +20% mais lento; moderate: +10%; hard: -5%
+  const factor = intensity === 'easy' ? 1.2 : intensity === 'moderate' ? 1.1 : 0.95;
+  return formatPace(base * factor);
+}
+
+function slugify(s: string) {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '');
+}
+
+function makeStudentSlug(name: string, id: string) {
+  const base = slugify(name) || 'aluno';
+  const suffix = (id || '').replace(/-/g, '').slice(0, 6) || '000000';
+  return `${base}-${suffix}`;
+}
+
+function randomToken() {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    // @ts-ignore
+    return crypto.randomUUID().replace(/-/g, '');
+  }
+  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+}
+
+export default function WorkoutEditPage() {
   const router = useRouter();
-  const params = useParams();
-  const workoutId = String((params as any)?.id || '');
+  const params = useParams<{ id: string }>();
+  const workoutId = params.id;
 
   const supabase = useMemo(() => createClient(), []);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [banner, setBanner] = useState<string | null>(null);
 
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [infoMsg, setInfoMsg] = useState<string | null>(null);
-
+  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
   const [student, setStudent] = useState<StudentRow | null>(null);
   const [week, setWeek] = useState<WeekRow | null>(null);
-  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
+
+  const [locked, setLocked] = useState(false);
 
   const [title, setTitle] = useState('');
-  const [plannedDate, setPlannedDate] = useState<string>(''); // yyyy-mm-dd
-  const [templateType, setTemplateType] = useState<string>('easy_run');
-  const [status, setStatus] = useState<WorkoutRow['status']>('draft');
-
-  const [warmupEnabled, setWarmupEnabled] = useState<boolean>(true);
-  const [warmupKm, setWarmupKm] = useState<string>('1');
+  const [includeWarmup, setIncludeWarmup] = useState(false);
+  const [warmupKm, setWarmupKm] = useState('');
+  const [includeCooldown, setIncludeCooldown] = useState(false);
+  const [cooldownKm, setCooldownKm] = useState('');
 
   const [blocks, setBlocks] = useState<BlockDraft[]>([
-    { distanceKm: '1', intensity: 'moderate', paceStr: '', note: '' },
+    { id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' },
   ]);
 
-  const totalKm = useMemo(() => {
-    const warm = warmupEnabled ? Number(String(warmupKm || '0').replace(',', '.')) : 0;
-    const sumBlocks = blocks.reduce((acc, b) => acc + Number(String(b.distanceKm || '0').replace(',', '.')), 0);
-    const total = (isFinite(warm) ? warm : 0) + (isFinite(sumBlocks) ? sumBlocks : 0);
-    return Number.isFinite(total) ? total : 0;
-  }, [blocks, warmupEnabled, warmupKm]);
+  async function loadAll() {
+    setLoading(true);
+    setBanner(null);
 
-  function blocksPayload() {
-    return blocks.map((b) => ({
-      distance_km: Number(String(b.distanceKm || '0').replace(',', '.')) || 0,
-      intensity: b.intensity,
-      pace: b.paceStr?.trim() || null,
-      note: b.note?.trim() || null,
-    }));
+    // workout
+    const { data: w, error: wErr } = await supabase
+      .from('workouts')
+      .select('id,student_id,trainer_id,week_id,status,template_type,title,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,locked_at,created_at')
+      .eq('id', workoutId)
+      .maybeSingle();
+
+    if (wErr) {
+      setBanner(wErr.message);
+      setLoading(false);
+      return;
+    }
+    if (!w) {
+      setBanner('Treino não encontrado.');
+      setLoading(false);
+      return;
+    }
+
+    setWorkout(w as any);
+
+    // student
+    const { data: st, error: stErr } = await supabase
+      .from('students')
+      .select('id,name,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
+      .eq('id', (w as any).student_id)
+      .maybeSingle();
+
+    if (stErr) {
+      setBanner(stErr.message);
+      setLoading(false);
+      return;
+    }
+    setStudent(st as any);
+
+    // week (fallback weeks -> training_weeks)
+    if ((w as any).week_id) {
+      const res1 = await supabase
+        .from('weeks')
+        .select('id,week_start,week_end,label')
+        .eq('id', (w as any).week_id)
+        .maybeSingle();
+
+      if (!res1.error) {
+        setWeek(res1.data as any);
+      } else if (String(res1.error.message || '').toLowerCase().includes('relation') && String(res1.error.message).includes('weeks')) {
+        const res2 = await supabase
+          .from('training_weeks')
+          .select('id,week_start,week_end,label')
+          .eq('id', (w as any).week_id)
+          .maybeSingle();
+        if (res2.error) {
+          setBanner(res2.error.message);
+          setLoading(false);
+          return;
+        }
+        setWeek(res2.data as any);
+      } else {
+        setBanner(res1.error.message);
+        setLoading(false);
+        return;
+      }
+    }
+
+    // lock check (any execution)
+    const { count } = await supabase
+      .from('executions')
+      .select('*', { count: 'exact', head: true })
+      .eq('workout_id', workoutId);
+
+    const isLocked = !!(w as any).locked_at || (count || 0) > 0;
+    setLocked(isLocked);
+
+    // populate form
+    setTitle((w as any).title || '');
+    setIncludeWarmup(!!(w as any).include_warmup);
+    setWarmupKm((w as any).warmup_km != null ? kmLabel((w as any).warmup_km) : '');
+    setIncludeCooldown(!!(w as any).include_cooldown);
+    setCooldownKm((w as any).cooldown_km != null ? kmLabel((w as any).cooldown_km) : '');
+
+    const rawBlocks = Array.isArray((w as any).blocks) ? ((w as any).blocks as any[]) : [];
+    setBlocks(
+      rawBlocks.length > 0
+        ? rawBlocks.map((b, idx) => ({
+            id: `b${idx + 1}`,
+            distanceKm: String(b?.distance_km ?? ''),
+            intensity: (b?.intensity ?? 'easy') as any,
+            paceStr: String(b?.pace ?? b?.pace_suggested ?? b?.ritmo ?? ''),
+            note: String(b?.notes ?? b?.note ?? ''),
+          }))
+        : [{ id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' }]
+    );
+
+    setLoading(false);
   }
 
   useEffect(() => {
-    (async () => {
-      try {
-        setLoading(true);
-        setErrorMsg(null);
+    if (!workoutId) return;
+    void loadAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workoutId]);
 
-        const { data: w, error: wErr } = await supabase
-          .from('workouts')
-          .select('id, student_id, week_id, title, status, template_type, total_km, planned_date, planned_day, warmup_km, warmup_enabled, blocks')
-          .eq('id', workoutId)
-          .single();
+  function updateBlock(id: string, patch: Partial<BlockDraft>) {
+    setBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
+  }
 
-        if (wErr) throw wErr;
+  function addBlock() {
+    const nextId = `b${blocks.length + 1}`;
+    setBlocks((prev) => [...prev, { id: nextId, distanceKm: '', intensity: 'easy', paceStr: '', note: '' }]);
+  }
 
-        const ww = w as WorkoutRow;
-        setWorkout(ww);
+  function removeBlock(id: string) {
+    setBlocks((prev) => prev.filter((b) => b.id !== id));
+  }
 
-        setTitle(ww.title || '');
-        setStatus(ww.status);
-        setTemplateType(ww.template_type || 'easy_run');
-        setPlannedDate(ww.planned_date || '');
+  function blocksPayload() {
+    return blocks
+      .filter((b) => b.distanceKm.trim() !== '')
+      .map((b) => ({
+        distance_km: parseKm(b.distanceKm),
+        intensity: b.intensity,
+        pace: b.paceStr || null,
+        notes: b.note || null,
+      }));
+  }
 
-        setWarmupEnabled(!!ww.warmup_enabled);
-        setWarmupKm(String(ww.warmup_km ?? 1).replace('.', ','));
-
-        // carregar blocos preservando pace/note
-        const loadedBlocks = Array.isArray(ww.blocks) ? ww.blocks : [];
-        if (loadedBlocks.length) {
-          setBlocks(
-            loadedBlocks.map((b: any) => ({
-              distanceKm: String(b?.distance_km ?? '').replace('.', ',') || '1',
-              intensity: (b?.intensity as any) || 'moderate',
-              paceStr: String(b?.pace ?? ''),
-              note: String(b?.note ?? ''),
-            }))
-          );
-        }
-
-        const { data: s, error: sErr } = await supabase
-          .from('students')
-          .select('id, full_name, p1k_pace')
-          .eq('id', ww.student_id)
-          .single();
-
-        if (sErr) throw sErr;
-        setStudent(s as StudentRow);
-
-        if (ww.week_id) {
-          const { data: wk, error: wkErr } = await supabase
-            .from('training_weeks')
-            .select('id, week_start, week_end, label')
-            .eq('id', ww.week_id)
-            .maybeSingle();
-          if (!wkErr && wk) setWeek(wk as WeekRow);
-        }
-      } catch (e: any) {
-        setErrorMsg(e?.message || 'Erro ao carregar treino.');
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [supabase, workoutId]);
-
-  async function onSave() {
+  async function save() {
     if (!workout) return;
-    try {
-      setSaving(true);
-      setErrorMsg(null);
-      setInfoMsg(null);
-
-      const payload = {
-        title: title.trim(),
-        status,
-        template_type: templateType,
-        planned_date: plannedDate || null,
-        warmup_enabled: warmupEnabled,
-        warmup_km: warmupEnabled ? Number(String(warmupKm || '0').replace(',', '.')) || 0 : 0,
-        blocks: blocksPayload(),
-        total_km: totalKm,
-      };
-
-      const { error } = await supabase.from('workouts').update(payload).eq('id', workout.id);
-      if (error) throw error;
-
-      setInfoMsg('Treino salvo.');
-      // opcional: recarregar
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Erro ao salvar.');
-    } finally {
-      setSaving(false);
+    if (locked) {
+      setBanner('Este treino já teve execução iniciada e não pode mais ser editado.');
+      return;
     }
+
+    setBanner(null);
+
+    const warm = includeWarmup ? parseKm(warmupKm) : 0;
+    const cool = includeCooldown ? parseKm(cooldownKm) : 0;
+    const blocksKm = sumBlocksKm(blocks);
+    const totalKm = warm + cool + blocksKm;
+
+    const payload = {
+      title: title || null,
+      include_warmup: includeWarmup,
+      warmup_km: includeWarmup ? warm : null,
+      include_cooldown: includeCooldown,
+      cooldown_km: includeCooldown ? cool : null,
+      blocks: blocksPayload(),
+      total_km: totalKm,
+    };
+
+    const { error } = await supabase.from('workouts').update(payload).eq('id', workout.id);
+    if (error) {
+      setBanner(error.message);
+      return;
+    }
+
+    setBanner('Treino salvo.');
+    await loadAll();
   }
 
-  if (loading) {
-    return (
-      <div>
-        <Topbar title="Editar treino" />
-        <div style={{ padding: 16 }}>Carregando...</div>
-      </div>
-    );
+  async function publish() {
+    if (!workout) return;
+    setBanner(null);
+
+    const { error } = await supabase.from('workouts').update({ status: 'ready' }).eq('id', workout.id);
+    if (error) {
+      setBanner(error.message);
+      return;
+    }
+
+    setBanner('Treino publicado (disponível para o aluno).');
+    await loadAll();
   }
+
+  async function ensurePortalAccess() {
+    if (!student) return null;
+
+    const patch: any = {};
+    if (!student.public_slug) patch.public_slug = makeStudentSlug(student.name, student.id);
+    if (!student.portal_token) patch.portal_token = randomToken();
+    if (!student.portal_enabled) patch.portal_enabled = true;
+
+    if (Object.keys(patch).length === 0) return student;
+
+    const { data, error } = await supabase
+      .from('students')
+      .update(patch)
+      .eq('id', student.id)
+      .select('id,name,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
+      .maybeSingle();
+
+    if (error) {
+      setBanner(error.message);
+      return null;
+    }
+
+    setStudent(data as any);
+    return data as any as StudentRow;
+  }
+
+  async function openPortalPreview() {
+    setBanner(null);
+    const st = await ensurePortalAccess();
+    if (!st?.public_slug || !st.portal_token) {
+      setBanner('Não foi possível habilitar o portal do aluno.');
+      return;
+    }
+    const url = `${window.location.origin}/p/${st.public_slug}/workouts/${workoutId}?t=${encodeURIComponent(st.portal_token)}&preview=1`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  const weekLabel = week ? (week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(week.week_end)}`) : '—';
+  const totalPreview = (() => {
+    const warm = includeWarmup ? parseKm(warmupKm) : 0;
+    const cool = includeCooldown ? parseKm(cooldownKm) : 0;
+    const blocksKm = sumBlocksKm(blocks);
+    return warm + cool + blocksKm;
+  })();
 
   return (
-    <div>
-      <Topbar title="Editar treino" />
-
-      <div style={{ maxWidth: 880, margin: '0 auto', padding: 16 }}>
-        <div
-          style={{
-            borderRadius: 18,
-            padding: 18,
-            background: 'rgba(255,255,255,0.04)',
-            border: '1px solid rgba(255,255,255,0.08)',
-          }}
-        >
-          <div style={{ opacity: 0.8, fontSize: 14 }}>Aluno</div>
-          <div style={{ fontSize: 28, fontWeight: 900 }}>{student?.full_name}</div>
-
-          <div style={{ marginTop: 8, opacity: 0.9 }}>
-            Status: <b>{status === 'draft' ? 'Rascunho' : status === 'ready' ? 'Disponível' : status === 'in_progress' ? 'Em andamento' : status === 'completed' ? 'Concluído' : status}</b>
-          </div>
-          <div style={{ marginTop: 2, opacity: 0.9 }}>
-            Template: <b>{templateLabel(templateType)}</b>
-          </div>
-
-          {week && (
-            <div style={{ marginTop: 8, opacity: 0.85 }}>
-              {week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(week.week_end)}`}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
-            <button
-              onClick={() => router.back()}
-              style={{
-                borderRadius: 14,
-                padding: '10px 14px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                background: 'rgba(255,255,255,0.05)',
-                fontWeight: 800,
-                cursor: 'pointer',
-              }}
-            >
-              Voltar
-            </button>
-
-            <button
-              onClick={onSave}
-              disabled={saving}
-              style={{
-                borderRadius: 14,
-                padding: '10px 14px',
-                border: '1px solid rgba(0,0,0,0)',
-                background: '#3BE577',
-                color: '#0A1B12',
-                fontWeight: 900,
-                cursor: saving ? 'not-allowed' : 'pointer',
-                opacity: saving ? 0.7 : 1,
-              }}
-            >
-              {saving ? 'Salvando…' : 'Salvar'}
-            </button>
-          </div>
-
-          {errorMsg && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 12,
-                border: '1px solid rgba(255,0,0,0.35)',
-                background: 'rgba(255,0,0,0.08)',
-              }}
-            >
-              {errorMsg}
-            </div>
-          )}
-
-          {infoMsg && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 12,
-                border: '1px solid rgba(59,229,119,0.35)',
-                background: 'rgba(59,229,119,0.08)',
-              }}
-            >
-              {infoMsg}
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>Título</div>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            style={{
-              width: '100%',
-              marginTop: 8,
-              borderRadius: 14,
-              padding: '12px 14px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.04)',
-            }}
-          />
-        </div>
-
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>Data planejada (opcional)</div>
-          <input
-            type="date"
-            value={plannedDate}
-            onChange={(e) => setPlannedDate(e.target.value)}
-            style={{
-              width: '100%',
-              marginTop: 8,
-              borderRadius: 14,
-              padding: '12px 14px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.04)',
-            }}
-          />
-        </div>
-
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>Template</div>
-          <select
-            value={templateType}
-            onChange={(e) => setTemplateType(e.target.value)}
-            style={{
-              width: '100%',
-              marginTop: 8,
-              borderRadius: 14,
-              padding: '12px 14px',
-              border: '1px solid rgba(255,255,255,0.12)',
-              background: 'rgba(255,255,255,0.04)',
-            }}
-          >
-            <option value="easy_run">Rodagem</option>
-            <option value="interval_run">Intervalado</option>
-            <option value="progressive_run">Progressivo</option>
-            <option value="alternated_run">Alternado</option>
-            <option value="long_run">Longão</option>
-            <option value="race">Prova</option>
-            <option value="recovery">Recuperação</option>
-          </select>
-        </div>
-
-        <div style={{ marginTop: 16 }}>
-          <div style={{ fontSize: 18, fontWeight: 900 }}>Aquecimento</div>
-          <label style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, opacity: 0.95 }}>
-            <input type="checkbox" checked={warmupEnabled} onChange={(e) => setWarmupEnabled(e.target.checked)} />
-            Incluir aquecimento
-          </label>
-
-          {warmupEnabled && (
-            <div style={{ marginTop: 8 }}>
-              <input
-                value={warmupKm}
-                onChange={(e) => setWarmupKm(e.target.value)}
-                placeholder="km"
-                style={{
-                  width: '100%',
-                  borderRadius: 14,
-                  padding: '12px 14px',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  background: 'rgba(255,255,255,0.04)',
-                }}
-              />
-              <div style={{ opacity: 0.75, marginTop: 6 }}>km (mínimo 0,5)</div>
-            </div>
-          )}
-        </div>
-
-        <div style={{ marginTop: 18 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <div style={{ fontSize: 18, fontWeight: 900 }}>Blocos</div>
-            <button
-              onClick={() => setBlocks((prev) => [...prev, { distanceKm: '1', intensity: 'moderate', paceStr: '', note: '' }])}
-              style={{
-                borderRadius: 999,
-                padding: '10px 14px',
-                border: '1px solid rgba(255,255,255,0.12)',
-                background: 'rgba(255,255,255,0.05)',
-                fontWeight: 900,
-                cursor: 'pointer',
-              }}
-            >
-              + Adicionar bloco
-            </button>
-          </div>
-
-          <div style={{ marginTop: 12, display: 'grid', gap: 12 }}>
-            {blocks.map((b, idx) => (
-              <div
-                key={idx}
-                style={{
-                  borderRadius: 18,
-                  padding: 16,
-                  background: 'rgba(0,0,0,0.25)',
-                  border: '1px solid rgba(255,255,255,0.08)',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <div style={{ fontSize: 16, fontWeight: 900 }}>Bloco {idx + 1}</div>
-                  <button
-                    onClick={() => setBlocks((prev) => prev.filter((_, i) => i !== idx))}
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      cursor: 'pointer',
-                      color: '#ffb4b4',
-                      fontWeight: 900,
-                    }}
-                  >
-                    Remover
-                  </button>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
-                  <div>
-                    <div style={{ opacity: 0.85, marginBottom: 6 }}>Distância (km)</div>
-                    <input
-                      value={b.distanceKm}
-                      onChange={(e) =>
-                        setBlocks((prev) => prev.map((x, i) => (i === idx ? { ...x, distanceKm: e.target.value } : x)))
-                      }
-                      style={{
-                        width: '100%',
-                        borderRadius: 14,
-                        padding: '12px 14px',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        background: 'rgba(255,255,255,0.04)',
-                      }}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={{ opacity: 0.85, marginBottom: 6 }}>Intensidade</div>
-                    <select
-                      value={b.intensity}
-                      onChange={(e) =>
-                        setBlocks((prev) =>
-                          prev.map((x, i) => (i === idx ? { ...x, intensity: e.target.value as any } : x))
-                        )
-                      }
-                      style={{
-                        width: '100%',
-                        borderRadius: 14,
-                        padding: '12px 14px',
-                        border: '1px solid rgba(255,255,255,0.12)',
-                        background: 'rgba(255,255,255,0.04)',
-                      }}
-                    >
-                      <option value="easy">Leve</option>
-                      <option value="moderate">Moderado</option>
-                      <option value="hard">Forte</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ opacity: 0.85, marginBottom: 6 }}>Ritmo sugerido</div>
-                  <input
-                    value={b.paceStr}
-                    onChange={(e) =>
-                      setBlocks((prev) => prev.map((x, i) => (i === idx ? { ...x, paceStr: e.target.value } : x)))
-                    }
-                    placeholder="Ex.: 4:30/km"
-                    style={{
-                      width: '100%',
-                      borderRadius: 14,
-                      padding: '12px 14px',
-                      border: '1px solid rgba(255,255,255,0.12)',
-                      background: 'rgba(255,255,255,0.04)',
-                    }}
-                  />
-                </div>
-
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ opacity: 0.85, marginBottom: 6 }}>Obs</div>
-                  <textarea
-                    value={b.note}
-                    onChange={(e) =>
-                      setBlocks((prev) => prev.map((x, i) => (i === idx ? { ...x, note: e.target.value } : x)))
-                    }
-                    placeholder="Opcional"
-                    rows={3}
-                    style={{
-                      width: '100%',
-                      borderRadius: 14,
-                      padding: '12px 14px',
-                      border: '1px solid rgba(255,255,255,0.12)',
-                      background: 'rgba(255,255,255,0.04)',
-                      resize: 'vertical',
-                    }}
-                  />
-                </div>
+    <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
+      <div className="mx-auto max-w-3xl space-y-4">
+        <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-slate-600 dark:text-slate-300">Editar treino</div>
+              <div className="text-xl font-semibold truncate">{title || workout?.title || 'Treino'}</div>
+              <div className="text-sm text-slate-600 dark:text-slate-300 mt-1">
+                Aluno: <span className="font-semibold">{student?.name ?? '—'}</span> · {weekLabel}
               </div>
-            ))}
+              <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Status: <b>{workout?.status ?? '—'}</b> · Total (preview): <b>{kmLabel(totalPreview)} km</b>
+                {locked ? ' · Edição bloqueada (já teve execução iniciada)' : ''}
+              </div>
+            </div>
+
+            <div className="shrink-0 flex flex-col items-end gap-2">
+              <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => router.back()}>
+                Voltar
+              </button>
+            </div>
           </div>
 
-          <div style={{ marginTop: 10, opacity: 0.9 }}>
-            Total estimado: <b>{String(totalKm).replace('.', ',')} km</b>
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <button
+              className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
+              onClick={save}
+              disabled={locked}
+            >
+              Salvar
+            </button>
+
+            <button
+              className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold disabled:opacity-50"
+              onClick={publish}
+              disabled={workout?.status === 'ready'}
+              title={workout?.status === 'ready' ? 'Já está publicado' : 'Publicar para o aluno'}
+            >
+              Publicar
+            </button>
+
+            <button className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold" onClick={openPortalPreview}>
+              Ver no portal (QA)
+            </button>
           </div>
         </div>
 
-        <div style={{ marginTop: 18 }}>
-          <button
-            onClick={onSave}
-            disabled={saving}
-            style={{
-              width: '100%',
-              borderRadius: 18,
-              padding: '16px 18px',
-              border: '1px solid rgba(0,0,0,0)',
-              background: '#3BE577',
-              color: '#0A1B12',
-              fontWeight: 1000,
-              cursor: saving ? 'not-allowed' : 'pointer',
-              opacity: saving ? 0.7 : 1,
-            }}
-          >
-            {saving ? 'Salvando…' : 'Salvar'}
-          </button>
-        </div>
+        {banner && (
+          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
+        )}
+
+        {loading ? (
+          <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
+        ) : workout ? (
+          <>
+            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4 space-y-3">
+              <div className="font-semibold">Aquecimento / Desaquecimento</div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} disabled={locked} />
+                Incluir aquecimento
+              </label>
+
+              {includeWarmup ? (
+                <div>
+                  <div className="text-sm text-slate-600 dark:text-slate-300">Aquecimento (km)</div>
+                  <input
+                    className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                    value={warmupKm}
+                    onChange={(e) => setWarmupKm(e.target.value)}
+                    inputMode="decimal"
+                    disabled={locked}
+                  />
+                </div>
+              ) : null}
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} disabled={locked} />
+                Incluir desaquecimento
+              </label>
+
+              {includeCooldown ? (
+                <div>
+                  <div className="text-sm text-slate-600 dark:text-slate-300">Desaquecimento (km)</div>
+                  <input
+                    className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                    value={cooldownKm}
+                    onChange={(e) => setCooldownKm(e.target.value)}
+                    inputMode="decimal"
+                    disabled={locked}
+                  />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-semibold">Blocos</div>
+                <button
+                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
+                  onClick={addBlock}
+                  disabled={locked}
+                >
+                  + Adicionar bloco
+                </button>
+              </div>
+
+              <div className="mt-3 space-y-3">
+                {blocks.map((b, idx) => {
+                  const autoPace = suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, b.intensity);
+                  return (
+                    <div key={b.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
+                      <div className="flex items-center justify-between">
+                        <div className="text-sm font-semibold">Bloco {idx + 1}</div>
+                        <button
+                          className="text-sm underline text-slate-600 dark:text-slate-300 disabled:opacity-50"
+                          onClick={() => removeBlock(b.id)}
+                          disabled={locked || blocks.length <= 1}
+                        >
+                          Remover
+                        </button>
+                      </div>
+
+                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">Distância (km)</div>
+                          <input
+                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                            value={b.distanceKm}
+                            onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
+                            inputMode="decimal"
+                            disabled={locked}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">Intensidade</div>
+                          <select
+                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                            value={b.intensity}
+                            onChange={(e) => {
+                              const v = e.target.value as BlockDraft['intensity'];
+                              updateBlock(b.id, {
+                                intensity: v,
+                                paceStr: b.paceStr || suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, v),
+                              });
+                            }}
+                            disabled={locked}
+                          >
+                            <option value="easy">Leve</option>
+                            <option value="moderate">Moderado</option>
+                            <option value="hard">Forte</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">Ritmo sugerido (opcional)</div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                            Sugestão automática: <b>{autoPace || '—'}</b>
+                          </div>
+                          <input
+                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                            value={b.paceStr}
+                            onChange={(e) => updateBlock(b.id, { paceStr: e.target.value })}
+                            placeholder={autoPace || 'Ex: 6:00–6:30/km'}
+                            disabled={locked}
+                          />
+                        </div>
+
+                        <div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">Obs (opcional)</div>
+                          <input
+                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                            value={b.note}
+                            onChange={(e) => updateBlock(b.id, { note: e.target.value })}
+                            placeholder="Ex: manter respiração controlada"
+                            disabled={locked}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        ) : null}
       </div>
-    </div>
+    </main>
   );
 }

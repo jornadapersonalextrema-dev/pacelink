@@ -31,15 +31,7 @@ type WorkoutRow = {
   title: string | null;
 };
 
-type TemplateType = 'easy_run' | 'progressive' | 'alternated';
-
-const TEMPLATE_TYPE_OPTIONS: { value: TemplateType; label: string }[] = [
-  { value: 'easy_run', label: 'Rodagem leve' },
-  { value: 'progressive', label: 'Progressivo' },
-  { value: 'alternated', label: 'Alternado' },
-];
-
-type WeekRow = { id: string; week_start: string; week_end: string; label: string | null };
+type WeekRow = { id: string; week_start: string; week_end: string; label: string | null; };
 
 type BlockDraft = {
   id: string;
@@ -61,11 +53,13 @@ function secToPaceStr(secPerKm: number | null) {
 }
 
 function formatWeekLabel(weekStart: string, weekEnd: string) {
-  try {
-    const ws = new Date(weekStart + 'T00:00:00');
-    const we = new Date(weekEnd + 'T00:00:00');
-    const fmt = (d: Date) =>
-      `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const [ys, ms, ds] = String(weekStart).split('-');
+  const [ye, me, de] = String(weekEnd).split('-');
+  if (!ys || !ms || !ds || !ye || !me || !de) return `Semana ${weekStart} – ${weekEnd}`;
+  return `Semana ${ds}/${ms} – ${de}/${me}`;
+}
+
+/${String(d.getMonth() + 1).padStart(2, '0')}`;
     return `${fmt(ws)} – ${fmt(we)}`;
   } catch {
     return `${weekStart} – ${weekEnd}`;
@@ -115,7 +109,6 @@ export default function NewWorkoutPage() {
   const [week, setWeek] = useState<WeekRow | null>(null);
 
   const [title, setTitle] = useState<string>('Treino');
-  const [templateType, setTemplateType] = useState<TemplateType>('easy_run');
   const [includeWarmup, setIncludeWarmup] = useState(true);
   const [warmupKm, setWarmupKm] = useState(1);
   const [includeCooldown, setIncludeCooldown] = useState(true);
@@ -127,12 +120,7 @@ export default function NewWorkoutPage() {
   ]);
 
   const totalKm = useMemo(
-    () =>
-      computeTotalKm(
-        includeWarmup ? warmupKm : 0,
-        includeCooldown ? cooldownKm : 0,
-        blocks
-      ),
+    () => computeTotalKm(includeWarmup ? warmupKm : 0, includeCooldown ? cooldownKm : 0, blocks),
     [includeWarmup, warmupKm, includeCooldown, cooldownKm, blocks]
   );
 
@@ -158,13 +146,29 @@ export default function NewWorkoutPage() {
 
         // Week (optional)
         if (weekId) {
-          const { data: wk, error: wkErr } = await supabase
+          // tenta 'weeks' e faz fallback p/ 'training_weeks' (caso 'weeks' não exista)
+          const res1 = await supabase
             .from('weeks')
             .select('id,trainer_id,week_start,week_end,label')
             .eq('id', weekId)
             .maybeSingle();
 
-          if (wkErr) throw wkErr;
+          let wk = res1.data as any;
+          const wkErr = res1.error as any;
+
+          if (wkErr && String(wkErr.message || '').toLowerCase().includes('relation') && String(wkErr.message).includes('weeks')) {
+            const res2 = await supabase
+              .from('training_weeks')
+              .select('id,trainer_id,week_start,week_end,label')
+              .eq('id', weekId)
+              .maybeSingle();
+
+            if (res2.error) throw res2.error;
+            wk = res2.data as any;
+          } else if (wkErr) {
+            throw wkErr;
+          }
+
           if (!mounted) return;
           setWeek(wk as any);
         }
@@ -224,19 +228,19 @@ export default function NewWorkoutPage() {
         trainer_id: trainerId,
         student_id: student.id,
         status: 'draft',
-        template_type: templateType, // ✅ agora sempre válido no Supabase
+        template_type: 'run',
         title: title?.trim() || null,
         include_warmup: includeWarmup,
-        warmup_km: warmupKm, // ✅ nunca manda 0 (o banco exige > 0)
+        warmup_km: includeWarmup ? warmupKm : 0,
         include_cooldown: includeCooldown,
-        cooldown_km: cooldownKm, // ✅ nunca manda 0 (o banco exige > 0)
+        cooldown_km: includeCooldown ? cooldownKm : 0,
         total_km: totalKm,
         share_slug: null,
         blocks: blocks.map((b) => ({
           distance_km: parseKm(b.distanceKm),
           intensity: b.intensity,
           pace: b.paceStr || null,
-          note: b.note || null,
+          notes: b.note || null,
         })),
       };
 
@@ -263,7 +267,7 @@ export default function NewWorkoutPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-        <Topbar title="Novo treino" />
+	<Topbar title="Novo treino" />
         <div className="mx-auto max-w-4xl p-6">Carregando…</div>
       </div>
     );
@@ -271,22 +275,17 @@ export default function NewWorkoutPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-      <Topbar title="Novo treino" />
+	<Topbar title="Novo treino" />
       <div className="mx-auto max-w-4xl p-6 space-y-6">
         <div className="rounded-3xl bg-surface-dark/70 border border-white/10 p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="text-sm text-white/60">Novo treino</div>
               <div className="text-2xl font-extrabold">{student?.name}</div>
-              <div className="text-sm text-white/60 mt-1">
-                Ritmo P1k: {secToPaceStr(student?.p1k_sec_per_km || null)}
-              </div>
+              <div className="text-sm text-white/60 mt-1">Ritmo P1k: {secToPaceStr(student?.p1k_sec_per_km || null)}</div>
               {week?.week_start && week?.week_end && (
                 <div className="mt-2 text-sm text-white/70">
-                  Semana:{' '}
-                  <span className="font-semibold">
-                    {week.label || formatWeekLabel(week.week_start, week.week_end)}
-                  </span>
+                  Semana: <span className="font-semibold">{week.label || formatWeekLabel(week.week_start, week.week_end)}</span>
                 </div>
               )}
             </div>
@@ -320,21 +319,6 @@ export default function NewWorkoutPage() {
             </div>
 
             <div>
-              <div className="text-sm text-white/60 mb-1">Tipo de treino</div>
-              <select
-                value={templateType}
-                onChange={(e) => setTemplateType(e.target.value as TemplateType)}
-                className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
-              >
-                {TEMPLATE_TYPE_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
               <div className="text-sm text-white/60 mb-1">Total estimado</div>
               <div className="h-12 rounded-2xl bg-black/30 border border-white/10 px-4 flex items-center font-bold">
                 {totalKm} km
@@ -344,11 +328,7 @@ export default function NewWorkoutPage() {
 
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
             <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={includeWarmup}
-                onChange={(e) => setIncludeWarmup(e.target.checked)}
-              />
+              <input type="checkbox" checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} />
               <span className="text-white/80">Aquecimento</span>
             </label>
 
@@ -358,17 +338,13 @@ export default function NewWorkoutPage() {
               onChange={(e) => setWarmupKm(Number(e.target.value))}
               type="number"
               step="0.5"
-              min="0.5"
+              min="0"
               className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
             />
             <span className="text-white/60">km</span>
 
             <label className="flex items-center gap-2 md:ml-6">
-              <input
-                type="checkbox"
-                checked={includeCooldown}
-                onChange={(e) => setIncludeCooldown(e.target.checked)}
-              />
+              <input type="checkbox" checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} />
               <span className="text-white/80">Desaquecimento</span>
             </label>
 
@@ -378,7 +354,7 @@ export default function NewWorkoutPage() {
               onChange={(e) => setCooldownKm(Number(e.target.value))}
               type="number"
               step="0.5"
-              min="0.5"
+              min="0"
               className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
             />
             <span className="text-white/60">km</span>
@@ -402,7 +378,10 @@ export default function NewWorkoutPage() {
                 <div className="flex items-center justify-between">
                   <div className="font-bold">Bloco {idx + 1}</div>
                   {blocks.length > 1 && (
-                    <button onClick={() => removeBlock(b.id)} className="text-sm text-red-200 hover:text-red-100">
+                    <button
+                      onClick={() => removeBlock(b.id)}
+                      className="text-sm text-red-200 hover:text-red-100"
+                    >
                       Remover
                     </button>
                   )}
