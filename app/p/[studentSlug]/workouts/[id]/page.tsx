@@ -36,7 +36,6 @@ type LastExecutionRow = {
 };
 
 function formatBR(iso: string) {
-  // iso: YYYY-MM-DD
   const [y, m, d] = iso.split('-');
   if (!y || !m || !d) return iso;
   return `${d}/${m}/${y}`;
@@ -95,7 +94,7 @@ export default function StudentWorkoutPage() {
         setLoading(true);
         setBanner(null);
 
-        // ✅ CORREÇÃO AQUI: id -> workoutId
+        // ✅ CORREÇÃO DO 400: envia workoutId (não "id")
         const url = `/api/portal/workout?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(
           token
         )}&workoutId=${encodeURIComponent(workoutId)}${preview ? '&preview=1' : ''}`;
@@ -253,9 +252,20 @@ export default function StudentWorkoutPage() {
 
   return (
     <div className="min-h-screen">
-      <Topbar title="Treino" right={<button onClick={() => router.push(backUrl)} className="text-sm underline">Voltar</button>} />
+      {/* ✅ Sem a prop "right" (não existe no TopbarProps) */}
+      <Topbar title="Treino" />
 
       <div className="max-w-2xl mx-auto px-4 py-6">
+        {/* ✅ Botão Voltar fora do Topbar */}
+        <div className="flex justify-end mb-4">
+          <button
+            onClick={() => router.push(backUrl)}
+            className="text-sm underline"
+          >
+            Voltar
+          </button>
+        </div>
+
         {banner && (
           <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
             {banner}
@@ -351,7 +361,10 @@ export default function StudentWorkoutPage() {
                     Status: <span className="font-medium">{lastExecution.status || '—'}</span>
                   </div>
                   <div className="opacity-80">
-                    Data: <span className="font-medium">{lastExecution.performed_at ? formatBR(lastExecution.performed_at) : '—'}</span>
+                    Data:{' '}
+                    <span className="font-medium">
+                      {lastExecution.performed_at ? formatBR(lastExecution.performed_at) : '—'}
+                    </span>
                   </div>
                   <div className="opacity-80">
                     Total: <span className="font-medium">{lastExecution.total_km ?? '—'} km</span>
