@@ -41,9 +41,14 @@ async function readPayload(req: Request) {
   const slug = String(body?.slug ?? qp.get('slug') ?? '').trim();
   const t = String(body?.t ?? qp.get('t') ?? '').trim();
   const workoutId = String(body?.workoutId ?? qp.get('workoutId') ?? qp.get('id') ?? '').trim();
-  const performedAt = String(body?.performedAt ?? qp.get('performedAt') ?? '').trim() || null;
+  const performedAt =
+    String(body?.performedAt ?? body?.performed_at ?? qp.get('performedAt') ?? qp.get('performed_at') ?? '').trim() ||
+    null;
 
-  return { slug, t, workoutId, performedAt };
+  const previewRaw = body?.preview ?? qp.get('preview') ?? null;
+  const preview = previewRaw === true || previewRaw === 1 || previewRaw === '1';
+
+  return { slug, t, workoutId, performedAt, preview };
 }
 
 type Student = {
@@ -56,7 +61,7 @@ type Student = {
 
 export async function POST(req: Request) {
   try {
-    const { slug, t, workoutId, performedAt } = await readPayload(req);
+    const { slug, t, workoutId, performedAt, preview } = await readPayload(req);
 
     if (!slug || !t || !workoutId) {
       return NextResponse.json(
@@ -88,7 +93,7 @@ export async function POST(req: Request) {
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
     if (!workout) return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
 
-    if (workout.status !== 'ready') {
+    if (!preview && workout.status !== 'ready') {
       return NextResponse.json(
         { ok: false, error: 'Treino ainda não está publicado (status != ready).' },
         { status: 400 }

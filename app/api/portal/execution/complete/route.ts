@@ -42,23 +42,43 @@ async function readPayload(req: Request) {
   const t = String(body?.t ?? qp.get('t') ?? '').trim();
   const workoutId = String(body?.workoutId ?? qp.get('workoutId') ?? qp.get('id') ?? '').trim();
 
-  const performedAtRaw = String(body?.performedAt ?? qp.get('performedAt') ?? '').trim();
+  const executionId = String(body?.executionId ?? qp.get('executionId') ?? '').trim() || null;
+
+  const previewRaw = body?.preview ?? qp.get('preview') ?? null;
+  const preview = previewRaw === true || previewRaw === 1 || previewRaw === '1';
+
+  const performedAtRaw = String(
+    body?.performedAt ?? body?.performed_at ?? qp.get('performedAt') ?? qp.get('performed_at') ?? ''
+  ).trim();
   const performedAt = performedAtRaw || isoDateInTZ('America/Sao_Paulo');
 
-  const actualTotalKmRaw = body?.actual_total_km ?? qp.get('actual_total_km') ?? null;
-  const actual_total_km =
-    actualTotalKmRaw === null || actualTotalKmRaw === undefined || actualTotalKmRaw === ''
-      ? null
-      : Number(actualTotalKmRaw);
+  const actualTotalKmRaw =
+    body?.actual_total_km ??
+    body?.total_km ??
+    body?.totalKm ??
+    qp.get('actual_total_km') ??
+    qp.get('total_km') ??
+    qp.get('totalKm') ??
+    null;
+
+  const actual_total_km = (() => {
+    if (actualTotalKmRaw === null || actualTotalKmRaw === undefined || actualTotalKmRaw === '') return null;
+    const n = Number(actualTotalKmRaw);
+    return Number.isFinite(n) ? n : null;
+  })();
 
   const rpeRaw = body?.rpe ?? qp.get('rpe') ?? null;
-  const rpe = rpeRaw === null || rpeRaw === undefined || rpeRaw === '' ? null : Number(rpeRaw);
+  const rpe = (() => {
+    if (rpeRaw === null || rpeRaw === undefined || rpeRaw === '') return null;
+    const n = Number(rpeRaw);
+    return Number.isFinite(n) ? n : null;
+  })();
 
   const comment = String(body?.comment ?? qp.get('comment') ?? '').trim() || null;
 
-  const actual_blocks = body?.actual_blocks ?? null;
+  const actual_blocks = body?.actual_blocks ?? body?.actualBlocks ?? null;
 
-  return { slug, t, workoutId, performedAt, actual_total_km, rpe, comment, actual_blocks };
+  return { slug, t, workoutId, executionId, performedAt, actual_total_km, rpe, comment, actual_blocks, preview };
 }
 
 type Student = {
@@ -71,7 +91,7 @@ type Student = {
 
 export async function POST(req: Request) {
   try {
-    const { slug, t, workoutId, performedAt, actual_total_km, rpe, comment, actual_blocks } =
+    const { slug, t, workoutId, executionId, performedAt, actual_total_km, rpe, comment, actual_blocks, preview } =
       await readPayload(req);
 
     if (!slug || !t || !workoutId) {
@@ -96,28 +116,49 @@ export async function POST(req: Request) {
 
     const nowIso = new Date().toISOString();
 
-    // Procura execução ativa
+    // Procura execução ativa (apenas do aluno)
     const { data: activeExecs } = await supabase
       .from('executions')
       .select('id,status')
       .eq('workout_id', workoutId)
+      .eq('student_id', st.id)
       .in('status', ['running', 'paused'])
       .order('last_event_at', { ascending: false, nullsFirst: false })
       .limit(1);
 
-    let execId = activeExecs && activeExecs.length > 0 ? activeExecs[0].id : null;
+    let execId = executionId || (activeExecs && activeExecs.length > 0 ? activeExecs[0].id : null);
+
+    // Se veio executionId, valida se pertence ao aluno e ao treino
+    if (executionId) {
+      const { data: ex, error: exErr } = await supabase
+        .from('executions')
+        .select('id,workout_id,student_id,status')
+        .eq('id', executionId)
+        .eq('workout_id', workoutId)
+        .eq('student_id', st.id)
+        .maybeSingle();
+
+      if (exErr) return NextResponse.json({ ok: false, error: exErr.message }, { status: 500 });
+      if (!ex) {
+        execId = null; // força caminho de criação/descoberta
+      }
+    }
 
     // Se não houver execução ativa, cria uma nova já concluída (para não travar o MVP)
     if (!execId) {
       const { data: workout, error: wErr } = await supabase
         .from('workouts')
-        .select('id,student_id,trainer_id,version')
+        .select('id,student_id,trainer_id,version,status')
         .eq('id', workoutId)
         .eq('student_id', st.id)
         .maybeSingle();
 
       if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
       if (!workout) return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
+
+      if (!preview && workout.status && workout.status !== 'ready') {
+        return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
+      }
 
       const lockedVersion = Number.isFinite(workout.version) ? workout.version : 1;
 
@@ -138,7 +179,7 @@ export async function POST(req: Request) {
           rpe,
           comment,
         })
-        .select('id,status,performed_at,completed_at')
+        .select('id,status,performed_at,completed_at,actual_total_km,rpe,comment,actual_blocks,last_event_at')
         .maybeSingle();
 
       if (iErr) return NextResponse.json({ ok: false, error: iErr.message }, { status: 500 });
@@ -147,7 +188,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, execution: ins, created: true });
     }
 
-    // Atualiza execução existente
+    // Atualiza execução existente (garantindo que é do aluno)
     const { data: upd, error: uErr } = await supabase
       .from('executions')
       .update({
@@ -161,7 +202,8 @@ export async function POST(req: Request) {
         comment,
       })
       .eq('id', execId)
-      .select('id,status,performed_at,completed_at')
+      .eq('student_id', st.id)
+      .select('id,status,performed_at,completed_at,actual_total_km,rpe,comment,actual_blocks,last_event_at')
       .maybeSingle();
 
     if (uErr) return NextResponse.json({ ok: false, error: uErr.message }, { status: 500 });

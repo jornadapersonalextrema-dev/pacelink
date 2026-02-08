@@ -23,7 +23,12 @@ export async function GET(req: Request) {
     const url = new URL(req.url);
     const slug = (url.searchParams.get('slug') || '').trim();
     const t = (url.searchParams.get('t') || '').trim();
-    const workoutId = (url.searchParams.get('workoutId') || '').trim();
+
+    // ✅ aceita workoutId OU id (fallback)
+    const workoutId = (url.searchParams.get('workoutId') || url.searchParams.get('id') || '').trim();
+
+    // ✅ preview permite ver treino não-ready
+    const preview = url.searchParams.get('preview') === '1';
 
     if (!slug || !t || !workoutId) {
       return NextResponse.json({ ok: false, error: 'Parâmetros ausentes (slug, t, workoutId).' }, { status: 400 });
@@ -52,19 +57,45 @@ export async function GET(req: Request) {
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
     if (!workout) return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
 
-    const { data: execs } = await supabase
+    // ✅ portal normal só vê treinos "ready"
+    if (!preview && workout.status && workout.status !== 'ready') {
+      return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
+    }
+
+    const { data: execs, error: eErr } = await supabase
       .from('executions')
       .select('id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km')
       .eq('workout_id', workoutId)
       .order('last_event_at', { ascending: false, nullsFirst: false })
       .limit(1);
 
+    if (eErr) return NextResponse.json({ ok: false, error: eErr.message }, { status: 500 });
+
     const last = execs && execs.length > 0 ? execs[0] : null;
+
+    // ✅ versão normalizada para o front novo
+    const lastExecution = last
+      ? {
+          id: last.id,
+          workout_id: last.workout_id,
+          status: last.status,
+          performed_at: last.performed_at,
+          rpe: last.rpe,
+          comment: last.comment,
+          total_km: last.actual_total_km ?? null, // <- normaliza para o nome esperado
+          actual_total_km: last.actual_total_km ?? null,
+        }
+      : null;
 
     return NextResponse.json({
       ok: true,
       student: { id: student.id, name: student.name, public_slug: student.public_slug },
       workout,
+
+      // ✅ novo (camelCase) para a página do portal
+      lastExecution,
+
+      // ✅ mantém compatibilidade com qualquer tela antiga
       last_execution: last,
     });
   } catch (e: any) {

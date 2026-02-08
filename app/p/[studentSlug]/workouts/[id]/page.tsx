@@ -28,7 +28,7 @@ type WorkoutRow = {
 
 type LastExecutionRow = {
   id: string;
-  status: string | null; // in_progress/completed
+  status: string | null; // running/paused/completed
   performed_at: string | null; // YYYY-MM-DD
   total_km: number | null;
   rpe: number | null;
@@ -36,6 +36,7 @@ type LastExecutionRow = {
 };
 
 function formatBR(iso: string) {
+  // iso: YYYY-MM-DD
   const [y, m, d] = iso.split('-');
   if (!y || !m || !d) return iso;
   return `${d}/${m}/${y}`;
@@ -48,9 +49,18 @@ function toISODate(d: Date) {
   return `${y}-${m}-${day}`;
 }
 
-async function safeReadJson(res: Response) {
+function addDaysISO(iso: string, days: number) {
+  const [y, m, d] = iso.split('-').map((x) => Number(x));
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setDate(dt.getDate() + days);
+  return toISODate(dt);
+}
+
+async function safeReadJson(res: Response): Promise<any | null> {
+  const txt = await res.text();
+  if (!txt) return null;
   try {
-    return await res.json();
+    return JSON.parse(txt);
   } catch {
     return null;
   }
@@ -58,7 +68,7 @@ async function safeReadJson(res: Response) {
 
 export default function StudentWorkoutPage() {
   const router = useRouter();
-  const params = useParams() as any;
+  const params = useParams<{ studentSlug: string; id: string }>();
   const search = useSearchParams();
 
   const studentSlug = params?.studentSlug || '';
@@ -70,14 +80,15 @@ export default function StudentWorkoutPage() {
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
 
+  const [studentName, setStudentName] = useState<string>('');
   const [workout, setWorkout] = useState<WorkoutRow | null>(null);
   const [lastExecution, setLastExecution] = useState<LastExecutionRow | null>(null);
 
-  const [plannedDate, setPlannedDate] = useState<string>('');
-  const [title, setTitle] = useState<string>('');
-
-  const [saving, setSaving] = useState(false);
-  const [isReady, setIsReady] = useState(false);
+  const [performedAt, setPerformedAt] = useState<string>(toISODate(new Date()));
+  const [totalKm, setTotalKm] = useState<string>('');
+  const [rpe, setRpe] = useState<string>('');
+  const [comment, setComment] = useState<string>('');
+  const [busy, setBusy] = useState(false);
 
   const backUrl = useMemo(() => {
     const q = new URLSearchParams();
@@ -94,7 +105,6 @@ export default function StudentWorkoutPage() {
         setLoading(true);
         setBanner(null);
 
-        // ✅ CORREÇÃO DO 400: envia workoutId (não "id")
         const url = `/api/portal/workout?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(
           token
         )}&workoutId=${encodeURIComponent(workoutId)}${preview ? '&preview=1' : ''}`;
@@ -104,286 +114,437 @@ export default function StudentWorkoutPage() {
         if (!json) throw new Error('Resposta inválida do servidor');
 
         if (!res.ok || !json?.ok) {
-          setBanner(json?.error || 'Treino não encontrado.');
-          setWorkout(null);
-          setLastExecution(null);
-          return;
+          throw new Error(json?.error || 'Erro ao carregar treino');
         }
 
-        const w: WorkoutRow = json.workout;
-        const le: LastExecutionRow | null = json.lastExecution ?? null;
-
         if (!alive) return;
 
-        setWorkout(w);
+        setStudentName(json.student?.name || '');
+        setWorkout(json.workout || null);
+
+        const leRaw = json.lastExecution || json.last_execution || null;
+        const le: LastExecutionRow | null = leRaw
+          ? {
+              id: String(leRaw.id),
+              status: leRaw.status ?? null,
+              performed_at: leRaw.performed_at ?? null,
+              total_km: leRaw.total_km ?? leRaw.actual_total_km ?? null,
+              rpe: leRaw.rpe ?? null,
+              comment: leRaw.comment ?? null,
+            }
+          : null;
+
         setLastExecution(le);
 
-        setTitle(w?.title || '');
-        setPlannedDate(w?.planned_date || '');
-        setIsReady((w?.status || '') === 'ready');
-      } catch (err: any) {
+        // Preenche form de execução com base na última execução (se existir)
+        if (le) {
+          setPerformedAt(le.performed_at || toISODate(new Date()));
+          setTotalKm(le.total_km != null ? String(le.total_km) : '');
+          setRpe(le.rpe != null ? String(le.rpe) : '');
+          setComment(le.comment || '');
+        } else {
+          setPerformedAt(toISODate(new Date()));
+          setTotalKm('');
+          setRpe('');
+          setComment('');
+        }
+      } catch (e: any) {
         if (!alive) return;
-        setBanner(err?.message || 'Erro ao carregar treino.');
-        setWorkout(null);
-        setLastExecution(null);
+        setBanner(e?.message || 'Erro inesperado');
       } finally {
-        if (alive) setLoading(false);
+        if (!alive) return;
+        setLoading(false);
       }
     }
 
-    if (studentSlug && token && workoutId) load();
-    else {
+    if (!studentSlug || !workoutId) {
+      setBanner('Link inválido (faltando parâmetros).');
       setLoading(false);
-      setBanner('Parâmetros ausentes (slug, t, workoutId).');
+      return;
     }
 
+    load();
     return () => {
       alive = false;
     };
-  }, [studentSlug, token, workoutId, preview]);
+  }, [studentSlug, workoutId, token, preview]);
 
-  async function onToggleReady() {
+  const totalPlanned = useMemo(() => {
+    const blocksKm =
+      (workout?.blocks || []).reduce((acc, b) => acc + (Number(b.distance_km) || 0), 0) || 0;
+    const warm = Number(workout?.warmup_km) || 0;
+    const cool = Number(workout?.cooldown_km) || 0;
+    return Math.round((warm + blocksKm + cool) * 10) / 10;
+  }, [workout]);
+
+  async function onRegisterExecution() {
     if (!workout) return;
 
     try {
-      setSaving(true);
+      setBusy(true);
       setBanner(null);
 
-      const res = await fetch('/api/portal/workout', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+      // 1) Garante uma execução ativa (start) para evitar criar múltiplas execuções por engano
+      const startUrl = `/api/portal/execution/start?slug=${encodeURIComponent(
+        studentSlug
+      )}&t=${encodeURIComponent(token)}${preview ? '&preview=1' : ''}`;
+
+      const startRes = await fetch(startUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          slug: studentSlug,
-          t: token,
           workoutId: workout.id,
-          status: isReady ? 'draft' : 'ready',
+          performedAt,
           preview: preview ? 1 : 0,
         }),
       });
 
-      const json = await safeReadJson(res);
-      if (!json) throw new Error('Resposta inválida do servidor');
+      const startJson = await safeReadJson(startRes);
+      if (!startJson) throw new Error('Resposta inválida do servidor');
 
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || 'Erro ao atualizar status.');
+      if (!startRes.ok || !startJson?.ok) {
+        throw new Error(startJson?.error || 'Não foi possível iniciar a execução');
       }
 
-      setIsReady(!isReady);
-    } catch (err: any) {
-      setBanner(err?.message || 'Erro ao atualizar status.');
-    } finally {
-      setSaving(false);
-    }
-  }
+      const executionId = String(startJson.execution?.id || '').trim();
+      if (!executionId) throw new Error('Falha ao iniciar execução (id ausente).');
 
-  async function onSaveBasics() {
-    if (!workout) return;
+      // 2) Conclui / salva o realizado (complete)
+      const completeUrl = `/api/portal/execution/complete?slug=${encodeURIComponent(
+        studentSlug
+      )}&t=${encodeURIComponent(token)}${preview ? '&preview=1' : ''}`;
 
-    try {
-      setSaving(true);
-      setBanner(null);
+      const kmNum = totalKm ? Number(totalKm) : null;
+      const rpeNum = rpe ? Number(rpe) : null;
+      const kmSafe = kmNum !== null && Number.isFinite(kmNum) ? kmNum : null;
+      const rpeSafe = rpeNum !== null && Number.isFinite(rpeNum) ? rpeNum : null;
 
-      const res = await fetch('/api/portal/workout', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+      const completeRes = await fetch(completeUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          slug: studentSlug,
-          t: token,
           workoutId: workout.id,
-          title,
-          planned_date: plannedDate || null,
+          executionId,
+          performedAt,
+          actual_total_km: kmSafe,
+          rpe: rpeSafe,
+          comment: comment || null,
           preview: preview ? 1 : 0,
         }),
       });
 
-      const json = await safeReadJson(res);
-      if (!json) throw new Error('Resposta inválida do servidor');
+      const completeJson = await safeReadJson(completeRes);
+      if (!completeJson) throw new Error('Resposta inválida do servidor');
 
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || 'Erro ao salvar.');
+      if (!completeRes.ok || !completeJson?.ok) {
+        throw new Error(completeJson?.error || 'Não foi possível registrar a execução');
       }
 
-      setWorkout({
-        ...workout,
-        title,
-        planned_date: plannedDate || null,
+      const ex = completeJson.execution || null;
+
+      setLastExecution({
+        id: String(ex?.id || executionId),
+        status: ex?.status || 'completed',
+        performed_at: ex?.performed_at || performedAt,
+        total_km: ex?.actual_total_km ?? kmSafe ?? null,
+        rpe: ex?.rpe ?? rpeSafe ?? null,
+        comment: ex?.comment ?? comment ?? '',
       });
-    } catch (err: any) {
-      setBanner(err?.message || 'Erro ao salvar.');
+    } catch (e: any) {
+      setBanner(e?.message || 'Erro inesperado');
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   }
-
-  async function onDeleteWorkout() {
-    if (!workout) return;
-    if (!confirm('Excluir este treino?')) return;
-
-    try {
-      setSaving(true);
-      setBanner(null);
-
-      const url = `/api/portal/workout?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(
-        token
-      )}&workoutId=${encodeURIComponent(workout.id)}${preview ? '&preview=1' : ''}`;
-
-      const res = await fetch(url, { method: 'DELETE' });
-      const json = await safeReadJson(res);
-      if (!json) throw new Error('Resposta inválida do servidor');
-
-      if (!res.ok || !json?.ok) {
-        throw new Error(json?.error || 'Erro ao excluir.');
-      }
-
-      router.push(backUrl);
-    } catch (err: any) {
-      setBanner(err?.message || 'Erro ao excluir.');
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const plannedDateLabel = useMemo(() => {
-    if (!plannedDate) return '—';
-    return formatBR(plannedDate);
-  }, [plannedDate]);
-
-  const todayIso = useMemo(() => toISODate(new Date()), []);
 
   return (
-    <div className="min-h-screen">
-      {/* ✅ Sem a prop "right" (não existe no TopbarProps) */}
-      <Topbar title="Treino" />
+    <div style={{ minHeight: '100vh', background: '#0B1711' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+        <Topbar
+          title={preview ? 'Preview (QA)' : 'Treino'}
+          rightSlot={
+            <button
+              onClick={() => router.push(backUrl)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                color: '#9ad2ff',
+                fontWeight: 800,
+                cursor: 'pointer',
+                padding: 6,
+              }}
+            >
+              Voltar
+            </button>
+          }
+        />
 
-      <div className="max-w-2xl mx-auto px-4 py-6">
-        {/* ✅ Botão Voltar fora do Topbar */}
-        <div className="flex justify-end mb-4">
-          <button
-            onClick={() => router.push(backUrl)}
-            className="text-sm underline"
-          >
-            Voltar
-          </button>
-        </div>
-
-        {banner && (
-          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-700">
-            {banner}
-          </div>
-        )}
-
-        {loading && <div className="text-sm opacity-70">Carregando...</div>}
-
-        {!loading && workout && (
-          <div className="space-y-6">
-            <div className="rounded-xl border p-4">
-              <div className="text-xs opacity-70 mb-2">
-                {plannedDate ? `Planejado: ${plannedDateLabel}` : 'Sem data planejada'}
-              </div>
-
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1">
-                  <div className="text-sm font-semibold">Título</div>
-                  <input
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Ex.: Intervalado 10x400"
-                  />
-
-                  <div className="mt-4 text-sm font-semibold">Data planejada</div>
-                  <input
-                    type="date"
-                    className="mt-1 w-full rounded-lg border px-3 py-2 text-sm"
-                    value={plannedDate || ''}
-                    onChange={(e) => setPlannedDate(e.target.value)}
-                    max={todayIso}
-                  />
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <button
-                    className="rounded-lg border px-3 py-2 text-sm"
-                    onClick={onSaveBasics}
-                    disabled={saving}
-                  >
-                    {saving ? 'Salvando...' : 'Salvar'}
-                  </button>
-
-                  <button
-                    className="rounded-lg border px-3 py-2 text-sm"
-                    onClick={onToggleReady}
-                    disabled={saving}
-                  >
-                    {isReady ? 'Marcar como rascunho' : 'Marcar como pronto'}
-                  </button>
-
-                  <button
-                    className="rounded-lg border border-red-300 px-3 py-2 text-sm text-red-700"
-                    onClick={onDeleteWorkout}
-                    disabled={saving}
-                  >
-                    Excluir
-                  </button>
-                </div>
-              </div>
+        <div style={{ padding: 16 }}>
+          {banner && (
+            <div
+              style={{
+                marginBottom: 12,
+                padding: 12,
+                borderRadius: 12,
+                background: 'rgba(255,0,0,0.10)',
+                border: '1px solid rgba(255,0,0,0.20)',
+                color: '#ffb3b3',
+                fontWeight: 700,
+              }}
+            >
+              {banner}
             </div>
+          )}
 
-            <div className="rounded-xl border p-4">
-              <div className="text-sm font-semibold mb-3">Blocos</div>
+          {loading ? (
+            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Carregando…</div>
+          ) : !workout ? (
+            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Treino não encontrado.</div>
+          ) : (
+            <>
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ color: 'rgba(255,255,255,0.65)', fontWeight: 700 }}>Aluno</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: '#fff' }}>
+                  {studentName || '—'}
+                </div>
 
-              {workout.blocks?.length ? (
-                <div className="space-y-3">
-                  {workout.blocks
-                    .slice()
-                    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-                    .map((b) => (
-                      <div key={b.id} className="rounded-lg border p-3">
-                        <div className="text-sm font-medium">
-                          {b.distance_km ? `${b.distance_km} km` : '—'} • {b.intensity || '—'} •{' '}
-                          {b.suggested_pace || '—'}
+                <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.8)' }}>
+                  <b>{workout.template_type === 'run' ? 'Rodagem' : workout.template_type || 'Treino'}</b>
+                  {workout.planned_distance_km != null ? ` • ${workout.planned_distance_km} km` : ''}
+                  {workout.planned_date ? ` • Planejado: ${formatBR(workout.planned_date)}` : ''}
+                </div>
+
+                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.85)' }}>
+                  <div style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 700 }}>Título</div>
+                  <div style={{ fontSize: 18, fontWeight: 900 }}>{workout.title || '—'}</div>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Detalhes
+                </div>
+                <div style={{ color: 'rgba(255,255,255,0.80)' }}>
+                  Aquecimento: {workout.warmup_km != null ? `${workout.warmup_km} km` : '—'} •
+                  Desaquecimento: {workout.cooldown_km != null ? `${workout.cooldown_km} km` : '—'}
+                </div>
+                <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)' }}>
+                  Total estimado: <b>{totalPlanned} km</b>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Blocos
+                </div>
+
+                {(workout.blocks || []).length === 0 ? (
+                  <div style={{ color: 'rgba(255,255,255,0.7)' }}>Nenhum bloco definido.</div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {(workout.blocks || [])
+                      .slice()
+                      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                      .map((b, idx) => (
+                        <div
+                          key={b.id}
+                          style={{
+                            borderRadius: 14,
+                            padding: 12,
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            background: 'rgba(0,0,0,0.10)',
+                          }}
+                        >
+                          <div style={{ fontWeight: 900, color: '#fff' }}>Bloco {idx + 1}</div>
+                          <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.85)' }}>
+                            <b>{b.distance_km != null ? `${b.distance_km} km` : '—'}</b>
+                            {b.intensity ? ` • ${b.intensity}` : ''}
+                          </div>
+                          <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.85)' }}>
+                            Ritmo sugerido: <b>{b.suggested_pace || '—'}</b>
+                          </div>
+                          {b.notes ? (
+                            <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.75)' }}>
+                              Obs: {b.notes}
+                            </div>
+                          ) : null}
                         </div>
-                        {b.notes && <div className="text-xs opacity-80 mt-1">{b.notes}</div>}
-                      </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="text-sm opacity-70">Sem blocos.</div>
-              )}
-            </div>
+                      ))}
+                  </div>
+                )}
+              </div>
 
-            <div className="rounded-xl border p-4">
-              <div className="text-sm font-semibold mb-2">Última execução</div>
-
-              {lastExecution ? (
-                <div className="text-sm">
-                  <div className="opacity-80">
-                    Status: <span className="font-medium">{lastExecution.status || '—'}</span>
-                  </div>
-                  <div className="opacity-80">
-                    Data:{' '}
-                    <span className="font-medium">
-                      {lastExecution.performed_at ? formatBR(lastExecution.performed_at) : '—'}
-                    </span>
-                  </div>
-                  <div className="opacity-80">
-                    Total: <span className="font-medium">{lastExecution.total_km ?? '—'} km</span>
-                  </div>
-                  <div className="opacity-80">
-                    RPE: <span className="font-medium">{lastExecution.rpe ?? '—'}</span>
-                  </div>
-                  {lastExecution.comment && (
-                    <div className="mt-2 rounded-lg border bg-gray-50 px-3 py-2 text-sm">
-                      {lastExecution.comment}
-                    </div>
-                  )}
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 24,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Execução
                 </div>
-              ) : (
-                <div className="text-sm opacity-70">Nenhuma execução registrada.</div>
-              )}
-            </div>
-          </div>
-        )}
+
+                <div style={{ color: 'rgba(255,255,255,0.75)', marginBottom: 10 }}>
+                  Status: <b>{lastExecution?.status || '—'}</b>
+                </div>
+
+                <label style={{ display: 'block', color: 'rgba(255,255,255,0.8)', fontWeight: 700 }}>
+                  Data realizada
+                </label>
+                <input
+                  type="date"
+                  value={performedAt}
+                  onChange={(e) => setPerformedAt(e.target.value)}
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  Total realizado (km)
+                </label>
+                <input
+                  inputMode="decimal"
+                  value={totalKm}
+                  onChange={(e) => setTotalKm(e.target.value)}
+                  placeholder="Ex.: 6"
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  RPE (1 a 10)
+                </label>
+                <input
+                  inputMode="numeric"
+                  value={rpe}
+                  onChange={(e) => setRpe(e.target.value)}
+                  placeholder="Ex.: 7"
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  Comentário (opcional)
+                </label>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Como foi o treino?"
+                  rows={4}
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                    resize: 'vertical',
+                  }}
+                />
+
+                <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
+                  <button
+                    onClick={onRegisterExecution}
+                    disabled={busy}
+                    style={{
+                      width: '100%',
+                      padding: '14px 16px',
+                      borderRadius: 14,
+                      border: 'none',
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      background: '#26E07B',
+                      color: '#052113',
+                      fontWeight: 900,
+                      fontSize: 18,
+                    }}
+                  >
+                    {busy ? 'Salvando…' : 'Registrar execução'}
+                  </button>
+                </div>
+
+                {workout.planned_date ? (
+                  <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.65)' }}>
+                    Semana: {formatBR(workout.planned_date)} – {formatBR(addDaysISO(workout.planned_date, 6))}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
