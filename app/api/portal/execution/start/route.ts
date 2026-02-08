@@ -2,101 +2,133 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
 
-function getEnv(name: string) {
+function mustEnv(name: string) {
   const v = process.env[name];
-  return v && v.trim() ? v.trim() : null;
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
 }
 
-function getSupabaseAdmin() {
-  const url = getEnv('SUPABASE_URL') || getEnv('NEXT_PUBLIC_SUPABASE_URL');
-  const key = getEnv('SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !key) throw new Error('Env ausente: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.');
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+const supabase = createClient(mustEnv('SUPABASE_URL'), mustEnv('SUPABASE_SERVICE_ROLE_KEY'), {
+  auth: { persistSession: false },
+});
+
+function isoDateInTZ(tz: string, d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (!y || !m || !day) return new Date().toISOString().slice(0, 10);
+  return `${y}-${m}-${day}`; // YYYY-MM-DD
 }
 
-type Body = {
-  slug: string;
-  t: string;
-  workoutId: string;
-  performedAt?: string; // YYYY-MM-DD
+async function readPayload(req: Request) {
+  const url = new URL(req.url);
+  const qp = url.searchParams;
+
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch {
+    body = null;
+  }
+
+  const slug = String(body?.slug ?? qp.get('slug') ?? '').trim();
+  const t = String(body?.t ?? qp.get('t') ?? '').trim();
+  const workoutId = String(body?.workoutId ?? qp.get('workoutId') ?? qp.get('id') ?? '').trim();
+  const performedAt = String(body?.performedAt ?? qp.get('performedAt') ?? '').trim() || null;
+
+  return { slug, t, workoutId, performedAt };
+}
+
+type Student = {
+  id: string;
+  name: string;
+  public_slug: string | null;
+  portal_token: string | null;
+  portal_enabled: boolean;
 };
 
 export async function POST(req: Request) {
   try {
-    const supabase = getSupabaseAdmin();
-
-    const body = (await req.json()) as Body;
-    const slug = (body.slug || '').trim();
-    const t = (body.t || '').trim();
-    const workoutId = (body.workoutId || '').trim();
+    const { slug, t, workoutId, performedAt } = await readPayload(req);
 
     if (!slug || !t || !workoutId) {
-      return NextResponse.json({ ok: false, error: 'Parâmetros ausentes (slug, t, workoutId).' }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: 'Parâmetros ausentes (slug, t, workoutId).' },
+        { status: 400 }
+      );
     }
 
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id,public_slug')
+      .select('id,name,public_slug,portal_token,portal_enabled')
       .eq('public_slug', slug)
-      .eq('portal_token', t)
-      .eq('portal_enabled', true)
       .maybeSingle();
 
     if (sErr) return NextResponse.json({ ok: false, error: sErr.message }, { status: 500 });
-    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado ou link inválido.' }, { status: 404 });
+    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado.' }, { status: 404 });
+
+    const st = student as Student;
+    if (!st.portal_enabled) return NextResponse.json({ ok: false, error: 'Portal desabilitado.' }, { status: 403 });
+    if (!st.portal_token || st.portal_token !== t) return NextResponse.json({ ok: false, error: 'Acesso inválido.' }, { status: 403 });
 
     const { data: workout, error: wErr } = await supabase
       .from('workouts')
-      .select('id,student_id,trainer_id,status,locked_at')
+      .select('id,student_id,trainer_id,status,version')
       .eq('id', workoutId)
-      .eq('student_id', student.id)
+      .eq('student_id', st.id)
       .maybeSingle();
 
     if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
     if (!workout) return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
 
-    // Regras MVP: se já concluiu, não inicia novamente
-    const { data: execs } = await supabase
+    if (workout.status !== 'ready') {
+      return NextResponse.json(
+        { ok: false, error: 'Treino ainda não está publicado (status != ready).' },
+        { status: 400 }
+      );
+    }
+
+    // Reaproveita se já tem execução ativa
+    const { data: activeExecs } = await supabase
       .from('executions')
-      .select('id,status,last_event_at')
+      .select('id,status,started_at,last_event_at')
       .eq('workout_id', workoutId)
+      .in('status', ['running', 'paused'])
       .order('last_event_at', { ascending: false, nullsFirst: false })
       .limit(1);
 
-    const last = execs && execs.length > 0 ? execs[0] : null;
-
-    if (last?.status === 'completed') {
-      return NextResponse.json({ ok: false, error: 'Este treino já foi concluído.' }, { status: 409 });
+    if (activeExecs && activeExecs.length > 0) {
+      return NextResponse.json({ ok: true, execution: activeExecs[0], reused: true });
     }
 
-    // Se já existe in_progress, reutiliza (evita duplicar se o aluno der refresh)
-    if (last?.status === 'in_progress') {
-      return NextResponse.json({ ok: true, execution: last });
-    }
+    const lockedVersion = Number.isFinite(workout.version) ? workout.version : 1;
+    const performed = performedAt || isoDateInTZ('America/Sao_Paulo');
 
-    const nowIso = new Date().toISOString();
+    const { data: ins, error: iErr } = await supabase
+      .from('executions')
+      .insert({
+        workout_id: workoutId,
+        student_id: workout.student_id,
+        trainer_id: workout.trainer_id,
+        locked_version: lockedVersion,
+        workout_version: lockedVersion,
+        status: 'running',
+        performed_at: performed,
+      })
+      .select('id,status,started_at,last_event_at,performed_at')
+      .maybeSingle();
 
-    const payload: any = {
-      workout_id: workout.id,
-      student_id: student.id,
-      trainer_id: workout.trainer_id,
-      status: 'in_progress',
-      started_at: nowIso,
-      last_event_at: nowIso,
-      performed_at: body.performedAt || null,
-    };
+    if (iErr) return NextResponse.json({ ok: false, error: iErr.message }, { status: 500 });
+    if (!ins) return NextResponse.json({ ok: false, error: 'Falha ao iniciar execução.' }, { status: 500 });
 
-    const { data: created, error: cErr } = await supabase.from('executions').insert(payload).select().maybeSingle();
-    if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 500 });
-
-    // trava edição do treino quando o aluno inicia
-    if (!workout.locked_at) {
-      await supabase.from('workouts').update({ locked_at: nowIso }).eq('id', workout.id).is('locked_at', null);
-    }
-
-    return NextResponse.json({ ok: true, execution: created });
+    return NextResponse.json({ ok: true, execution: ins });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'Erro inesperado.' }, { status: 500 });
   }

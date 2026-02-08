@@ -2,102 +2,172 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 export const runtime = 'nodejs';
-export const dynamic = 'force-dynamic';
 
-function getEnv(name: string) {
+function mustEnv(name: string) {
   const v = process.env[name];
-  return v && v.trim() ? v.trim() : null;
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
 }
 
-function getSupabaseAdmin() {
-  const url = getEnv('SUPABASE_URL') || getEnv('NEXT_PUBLIC_SUPABASE_URL');
-  const key = getEnv('SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !key) throw new Error('Env ausente: SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY.');
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
+const supabase = createClient(mustEnv('SUPABASE_URL'), mustEnv('SUPABASE_SERVICE_ROLE_KEY'), {
+  auth: { persistSession: false },
+});
+
+function isoDateInTZ(tz: string, d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  if (!y || !m || !day) return new Date().toISOString().slice(0, 10);
+  return `${y}-${m}-${day}`;
 }
 
-type Body = {
-  slug: string;
-  t: string;
-  workoutId: string;
-  executionId: string;
-  performedAt?: string; // YYYY-MM-DD
-  actualTotalKm?: number | string | null;
-  rpe?: number | string | null;
-  comment?: string | null;
-  totalElapsedMs?: number | null;
-};
+async function readPayload(req: Request) {
+  const url = new URL(req.url);
+  const qp = url.searchParams;
 
-function toNumber(v: any): number | null {
-  if (v == null) return null;
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string') {
-    const n = Number(v.replace(',', '.'));
-    return Number.isFinite(n) ? n : null;
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch {
+    body = null;
   }
-  return null;
+
+  const slug = String(body?.slug ?? qp.get('slug') ?? '').trim();
+  const t = String(body?.t ?? qp.get('t') ?? '').trim();
+  const workoutId = String(body?.workoutId ?? qp.get('workoutId') ?? qp.get('id') ?? '').trim();
+
+  const performedAtRaw = String(body?.performedAt ?? qp.get('performedAt') ?? '').trim();
+  const performedAt = performedAtRaw || isoDateInTZ('America/Sao_Paulo');
+
+  const actualTotalKmRaw = body?.actual_total_km ?? qp.get('actual_total_km') ?? null;
+  const actual_total_km =
+    actualTotalKmRaw === null || actualTotalKmRaw === undefined || actualTotalKmRaw === ''
+      ? null
+      : Number(actualTotalKmRaw);
+
+  const rpeRaw = body?.rpe ?? qp.get('rpe') ?? null;
+  const rpe = rpeRaw === null || rpeRaw === undefined || rpeRaw === '' ? null : Number(rpeRaw);
+
+  const comment = String(body?.comment ?? qp.get('comment') ?? '').trim() || null;
+
+  const actual_blocks = body?.actual_blocks ?? null;
+
+  return { slug, t, workoutId, performedAt, actual_total_km, rpe, comment, actual_blocks };
 }
+
+type Student = {
+  id: string;
+  name: string;
+  public_slug: string | null;
+  portal_token: string | null;
+  portal_enabled: boolean;
+};
 
 export async function POST(req: Request) {
   try {
-    const supabase = getSupabaseAdmin();
+    const { slug, t, workoutId, performedAt, actual_total_km, rpe, comment, actual_blocks } =
+      await readPayload(req);
 
-    const body = (await req.json()) as Body;
-
-    const slug = (body.slug || '').trim();
-    const t = (body.t || '').trim();
-    const workoutId = (body.workoutId || '').trim();
-    const executionId = (body.executionId || '').trim();
-
-    if (!slug || !t || !workoutId || !executionId) {
-      return NextResponse.json({ ok: false, error: 'Parâmetros ausentes.' }, { status: 400 });
+    if (!slug || !t || !workoutId) {
+      return NextResponse.json(
+        { ok: false, error: 'Parâmetros ausentes (slug, t, workoutId).' },
+        { status: 400 }
+      );
     }
 
     const { data: student, error: sErr } = await supabase
       .from('students')
-      .select('id')
+      .select('id,name,public_slug,portal_token,portal_enabled')
       .eq('public_slug', slug)
-      .eq('portal_token', t)
-      .eq('portal_enabled', true)
       .maybeSingle();
 
     if (sErr) return NextResponse.json({ ok: false, error: sErr.message }, { status: 500 });
-    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado ou link inválido.' }, { status: 404 });
+    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado.' }, { status: 404 });
 
-    const { data: ex, error: exErr } = await supabase
-      .from('executions')
-      .select('id,workout_id,student_id,status,started_at')
-      .eq('id', executionId)
-      .eq('workout_id', workoutId)
-      .maybeSingle();
-
-    if (exErr) return NextResponse.json({ ok: false, error: exErr.message }, { status: 500 });
-    if (!ex) return NextResponse.json({ ok: false, error: 'Execução não encontrada.' }, { status: 404 });
-    if (ex.student_id !== student.id) return NextResponse.json({ ok: false, error: 'Acesso inválido.' }, { status: 403 });
-
-    if (ex.status === 'completed') {
-      return NextResponse.json({ ok: true, execution: ex });
-    }
+    const st = student as Student;
+    if (!st.portal_enabled) return NextResponse.json({ ok: false, error: 'Portal desabilitado.' }, { status: 403 });
+    if (!st.portal_token || st.portal_token !== t) return NextResponse.json({ ok: false, error: 'Acesso inválido.' }, { status: 403 });
 
     const nowIso = new Date().toISOString();
-    const started = ex.started_at ? new Date(ex.started_at).getTime() : Date.now();
-    const elapsed = body.totalElapsedMs != null ? body.totalElapsedMs : Math.max(0, Date.now() - started);
 
-    const payload: any = {
-      status: 'completed',
-      completed_at: nowIso,
-      last_event_at: nowIso,
-      performed_at: body.performedAt || null,
-      total_elapsed_ms: elapsed,
-      actual_total_km: toNumber(body.actualTotalKm),
-      rpe: toNumber(body.rpe),
-      comment: body.comment || null,
-    };
+    // Procura execução ativa
+    const { data: activeExecs } = await supabase
+      .from('executions')
+      .select('id,status')
+      .eq('workout_id', workoutId)
+      .in('status', ['running', 'paused'])
+      .order('last_event_at', { ascending: false, nullsFirst: false })
+      .limit(1);
 
-    const { data: updated, error: uErr } = await supabase.from('executions').update(payload).eq('id', executionId).select().maybeSingle();
+    let execId = activeExecs && activeExecs.length > 0 ? activeExecs[0].id : null;
+
+    // Se não houver execução ativa, cria uma nova já concluída (para não travar o MVP)
+    if (!execId) {
+      const { data: workout, error: wErr } = await supabase
+        .from('workouts')
+        .select('id,student_id,trainer_id,version')
+        .eq('id', workoutId)
+        .eq('student_id', st.id)
+        .maybeSingle();
+
+      if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
+      if (!workout) return NextResponse.json({ ok: false, error: 'Treino não encontrado.' }, { status: 404 });
+
+      const lockedVersion = Number.isFinite(workout.version) ? workout.version : 1;
+
+      const { data: ins, error: iErr } = await supabase
+        .from('executions')
+        .insert({
+          workout_id: workoutId,
+          student_id: workout.student_id,
+          trainer_id: workout.trainer_id,
+          locked_version: lockedVersion,
+          workout_version: lockedVersion,
+          status: 'completed',
+          performed_at: performedAt,
+          completed_at: nowIso,
+          last_event_at: nowIso,
+          actual_total_km: actual_total_km ?? 0,
+          actual_blocks: actual_blocks ?? [],
+          rpe,
+          comment,
+        })
+        .select('id,status,performed_at,completed_at')
+        .maybeSingle();
+
+      if (iErr) return NextResponse.json({ ok: false, error: iErr.message }, { status: 500 });
+      if (!ins) return NextResponse.json({ ok: false, error: 'Falha ao concluir execução.' }, { status: 500 });
+
+      return NextResponse.json({ ok: true, execution: ins, created: true });
+    }
+
+    // Atualiza execução existente
+    const { data: upd, error: uErr } = await supabase
+      .from('executions')
+      .update({
+        status: 'completed',
+        completed_at: nowIso,
+        last_event_at: nowIso,
+        performed_at: performedAt,
+        actual_total_km: actual_total_km ?? 0,
+        actual_blocks: actual_blocks ?? [],
+        rpe,
+        comment,
+      })
+      .eq('id', execId)
+      .select('id,status,performed_at,completed_at')
+      .maybeSingle();
+
     if (uErr) return NextResponse.json({ ok: false, error: uErr.message }, { status: 500 });
+    if (!upd) return NextResponse.json({ ok: false, error: 'Falha ao concluir execução.' }, { status: 500 });
 
-    return NextResponse.json({ ok: true, execution: updated });
+    return NextResponse.json({ ok: true, execution: upd, created: false });
   } catch (e: any) {
     return NextResponse.json({ ok: false, error: e?.message || 'Erro inesperado.' }, { status: 500 });
   }
