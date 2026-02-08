@@ -59,12 +59,6 @@ function formatWeekLabel(weekStart: string, weekEnd: string) {
   return `Semana ${ds}/${ms} – ${de}/${me}`;
 }
 
-/${String(d.getMonth() + 1).padStart(2, '0')}`;
-    return `${fmt(ws)} – ${fmt(we)}`;
-  } catch {
-    return `${weekStart} – ${weekEnd}`;
-  }
-}
 
 function round1(n: number) {
   return Math.round(n * 10) / 10;
