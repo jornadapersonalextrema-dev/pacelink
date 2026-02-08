@@ -2,8 +2,8 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+
 import Topbar from '../../../../../components/Topbar';
-import Button from '../../../../../components/Button';
 
 type BlockRow = {
   id: string;
@@ -11,439 +11,560 @@ type BlockRow = {
   intensity: string | null;
   suggested_pace: string | null;
   notes: string | null;
+  sort_order: number | null;
 };
 
 type WorkoutRow = {
   id: string;
   title: string | null;
   template_type: string | null;
-  status: string | null;
-  planned_date: string | null;
   warmup_km: number | null;
   cooldown_km: number | null;
-  total_km: number | null;
+  planned_distance_km: number | null;
+  planned_date: string | null; // YYYY-MM-DD
+  status: string | null; // draft/ready/etc
   blocks: BlockRow[];
 };
 
-type StudentRow = {
+type LastExecutionRow = {
   id: string;
-  name: string;
-  p1k_pace: string | null;
-};
-
-type ExecutionRow = {
-  id: string;
-  status: string | null;
-  performed_at: string | null;
-  actual_total_km: number | null;
+  status: string | null; // in_progress/completed
+  performed_at: string | null; // YYYY-MM-DD
+  total_km: number | null;
   rpe: number | null;
   comment: string | null;
 };
 
-type WorkoutResponse =
-  | { ok: true; student: StudentRow; workout: WorkoutRow; lastExecution: ExecutionRow | null }
-  | { ok: false; error: string };
-
-function formatBR(dateISO?: string | null) {
-  if (!dateISO) return '—';
-  // dateISO esperado: YYYY-MM-DD
-  const [y, m, d] = dateISO.split('-');
-  if (!y || !m || !d) return dateISO;
+function formatBR(iso: string) {
+  // iso: YYYY-MM-DD
+  const [y, m, d] = iso.split('-');
+  if (!y || !m || !d) return iso;
   return `${d}/${m}/${y}`;
 }
 
-function km(v?: number | null) {
-  if (v === null || v === undefined) return '—';
-  const n = Number(v);
-  if (Number.isNaN(n)) return '—';
-  return `${n.toFixed(1).replace('.', ',')} km`;
+function toISODate(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function addDaysISO(iso: string, days: number) {
+  const [y, m, d] = iso.split('-').map((v) => Number(v));
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setDate(dt.getDate() + days);
+  return toISODate(dt);
+}
+
+async function safeReadJson(res: Response): Promise<any | null> {
+  const txt = await res.text();
+  if (!txt) return null;
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return null;
+  }
 }
 
 export default function PortalWorkoutPage() {
   const router = useRouter();
   const params = useParams<{ studentSlug: string; id: string }>();
-  const sp = useSearchParams();
+  const search = useSearchParams();
 
   const studentSlug = params?.studentSlug || '';
   const workoutId = params?.id || '';
-  const token = sp?.get('t') || '';
+
+  const token = search?.get('t') || '';
+  const preview = search?.get('preview') === '1';
 
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
-  const [data, setData] = useState<WorkoutResponse | null>(null);
 
-  const [performedAt, setPerformedAt] = useState<string>(() => {
-    // default: hoje (YYYY-MM-DD) baseado no horário do browser
-    const d = new Date();
-    const yyyy = String(d.getFullYear());
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  });
-  const [actualKm, setActualKm] = useState<string>('');
+  const [studentName, setStudentName] = useState<string>('');
+  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
+  const [lastExecution, setLastExecution] = useState<LastExecutionRow | null>(null);
+
+  const [performedAt, setPerformedAt] = useState<string>(toISODate(new Date()));
+  const [totalKm, setTotalKm] = useState<string>('');
   const [rpe, setRpe] = useState<string>('');
   const [comment, setComment] = useState<string>('');
+  const [busy, setBusy] = useState(false);
 
-  async function readJsonSafe(res: Response): Promise<any | null> {
-    const txt = await res.text();
-    if (!txt) return null;
-    try {
-      return JSON.parse(txt);
-    } catch {
-      // Pode acontecer quando a API retorna HTML/empty em erro (500/404/etc.)
-      return { ok: false, error: txt };
-    }
-  }
+  const backUrl = useMemo(() => {
+    const q = new URLSearchParams();
+    if (token) q.set('t', token);
+    if (preview) q.set('preview', '1');
+    return `/p/${studentSlug}?${q.toString()}`;
+  }, [studentSlug, token, preview]);
 
-  async function load() {
-    setLoading(true);
-    setBanner(null);
+  useEffect(() => {
+    let alive = true;
 
-    try {
-      const url = `/api/portal/workout?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(
-        token
-      )}&workoutId=${encodeURIComponent(workoutId)}`;
+    async function load() {
+      try {
+        setLoading(true);
+        setBanner(null);
 
-      const res = await fetch(url, { method: 'GET' });
-      const json = (await readJsonSafe(res)) as WorkoutResponse | null;
+        const url = `/api/portal/workout?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(
+          token
+        )}&id=${encodeURIComponent(workoutId)}${preview ? '&preview=1' : ''}`;
 
-      if (!res.ok) {
-        setBanner((json as any)?.error || `Erro ao carregar (${res.status})`);
-        setData(null);
-        setLoading(false);
-        return;
-      }
+        const res = await fetch(url, { cache: 'no-store' });
+        const json = await safeReadJson(res);
+        if (!json) throw new Error('Resposta inválida do servidor');
 
-      if (!json?.ok) {
-        setBanner((json as any)?.error || 'Não foi possível carregar.');
-        setData(null);
-        setLoading(false);
-        return;
-      }
-
-      setData(json);
-
-      // Pré-preencher campos com execução anterior (se existir)
-      const last = json.lastExecution;
-      if (last) {
-        if (last.performed_at) setPerformedAt(last.performed_at);
-        if (last.actual_total_km !== null && last.actual_total_km !== undefined) {
-          setActualKm(String(last.actual_total_km));
-        } else {
-          setActualKm('');
+        if (!res.ok || !json?.ok) {
+          throw new Error(json?.error || 'Erro ao carregar treino');
         }
-        if (last.rpe !== null && last.rpe !== undefined) setRpe(String(last.rpe));
-        else setRpe('');
-        if (last.comment) setComment(last.comment);
-        else setComment('');
-      } else {
-        setActualKm('');
-        setRpe('');
-        setComment('');
+
+        if (!alive) return;
+
+        setStudentName(json.student?.name || '');
+        setWorkout(json.workout || null);
+        setLastExecution(json.last_execution || null);
+
+        // Preenche form de execução com base na última execução (se existir)
+        const le: LastExecutionRow | null = json.last_execution || null;
+        if (le) {
+          setPerformedAt(le.performed_at || toISODate(new Date()));
+          setTotalKm(le.total_km != null ? String(le.total_km) : '');
+          setRpe(le.rpe != null ? String(le.rpe) : '');
+          setComment(le.comment || '');
+        } else {
+          setPerformedAt(toISODate(new Date()));
+          setTotalKm('');
+          setRpe('');
+          setComment('');
+        }
+      } catch (e: any) {
+        if (!alive) return;
+        setBanner(e?.message || 'Erro inesperado');
+      } finally {
+        if (!alive) return;
+        setLoading(false);
       }
-
-      setLoading(false);
-    } catch (e: any) {
-      setBanner(e?.message || 'Falha ao carregar.');
-      setData(null);
-      setLoading(false);
     }
-  }
 
-  async function start() {
-    setBanner(null);
-
-    if (!token) {
-      setBanner('Link inválido: token ausente.');
+    if (!studentSlug || !workoutId) {
+      setBanner('Link inválido (faltando parâmetros).');
+      setLoading(false);
       return;
     }
 
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [studentSlug, workoutId, token, preview]);
+
+  const totalPlanned = useMemo(() => {
+    const blocksKm =
+      (workout?.blocks || []).reduce((acc, b) => acc + (Number(b.distance_km) || 0), 0) || 0;
+    const warm = Number(workout?.warmup_km) || 0;
+    const cool = Number(workout?.cooldown_km) || 0;
+    return Math.round((warm + blocksKm + cool) * 10) / 10;
+  }, [workout]);
+
+  async function onStartOrSaveExecution() {
+    if (!workout) return;
+
     try {
-      const res = await fetch('/api/portal/execution/start', {
+      setBusy(true);
+      setBanner(null);
+
+      // Se ainda não tem execução em andamento, cria (start)
+      const startUrl = `/api/portal/execution/start?slug=${encodeURIComponent(
+        studentSlug
+      )}&t=${encodeURIComponent(token)}${preview ? '&preview=1' : ''}`;
+
+      const res = await fetch(startUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          slug: studentSlug,
-          t: token,
-          workoutId,
+          workoutId: workout.id,
           performedAt,
         }),
       });
 
-      const json = await readJsonSafe(res);
+      const json = await safeReadJson(res);
+      if (!json) throw new Error('Resposta inválida do servidor');
 
       if (!res.ok || !json?.ok) {
-        setBanner(json?.error || `Não foi possível iniciar (${res.status}).`);
-        return;
+        throw new Error(json?.error || 'Não foi possível registrar a execução');
       }
 
-      await load();
+      // Atualiza UI: marca execução em andamento
+      setLastExecution((prev) => ({
+        id: json.execution?.id || prev?.id || 'temp',
+        status: json.execution?.status || 'in_progress',
+        performed_at: performedAt,
+        total_km: prev?.total_km ?? null,
+        rpe: prev?.rpe ?? null,
+        comment: prev?.comment ?? '',
+      }));
     } catch (e: any) {
-      setBanner(e?.message || 'Falha ao iniciar.');
+      setBanner(e?.message || 'Erro inesperado');
+    } finally {
+      setBusy(false);
     }
   }
 
-  async function complete() {
-    setBanner(null);
-
-    if (!token) {
-      setBanner('Link inválido: token ausente.');
-      return;
-    }
+  async function onCompleteExecution() {
+    if (!workout) return;
 
     try {
-      const res = await fetch('/api/portal/execution/complete', {
+      setBusy(true);
+      setBanner(null);
+
+      const executionId = lastExecution?.id;
+      if (!executionId) {
+        throw new Error('Não há execução em andamento para concluir.');
+      }
+
+      const completeUrl = `/api/portal/execution/complete?slug=${encodeURIComponent(
+        studentSlug
+      )}&t=${encodeURIComponent(token)}${preview ? '&preview=1' : ''}`;
+
+      const res = await fetch(completeUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          slug: studentSlug,
-          t: token,
-          workoutId,
+          executionId,
           performedAt,
-          actual_total_km: actualKm ? Number(actualKm) : null,
+          totalKm: totalKm ? Number(totalKm) : null,
           rpe: rpe ? Number(rpe) : null,
           comment: comment || null,
         }),
       });
 
-      const json = await readJsonSafe(res);
+      const json = await safeReadJson(res);
+      if (!json) throw new Error('Resposta inválida do servidor');
 
       if (!res.ok || !json?.ok) {
-        setBanner(json?.error || `Não foi possível concluir (${res.status}).`);
-        return;
+        throw new Error(json?.error || 'Não foi possível concluir a execução');
       }
 
-      await load();
+      setLastExecution((prev) => ({
+        id: prev?.id || executionId,
+        status: 'completed',
+        performed_at: performedAt,
+        total_km: totalKm ? Number(totalKm) : null,
+        rpe: rpe ? Number(rpe) : null,
+        comment: comment || '',
+      }));
     } catch (e: any) {
-      setBanner(e?.message || 'Falha ao concluir.');
+      setBanner(e?.message || 'Erro inesperado');
+    } finally {
+      setBusy(false);
     }
   }
 
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [studentSlug, workoutId, token]);
-
-  const okData = useMemo(() => (data && data.ok ? data : null), [data]);
-  const student = okData?.student || null;
-  const workout = okData?.workout || null;
-  const last = okData?.lastExecution || null;
-
-  const status = (last?.status || workout?.status || '').toLowerCase();
-  const isInProgress = status === 'in_progress' || status === 'running';
-  const isCompleted = status === 'done' || status === 'completed';
-
   return (
-    <div style={{ minHeight: '100vh' }}>
-      <Topbar title="Treino" right={<a onClick={() => router.back()}>Voltar</a>} />
-
-      <div style={{ maxWidth: 760, margin: '0 auto', padding: 16 }}>
-        {banner ? (
-          <div
-            style={{
-              marginBottom: 16,
-              padding: 14,
-              borderRadius: 12,
-              border: '1px solid rgba(255,0,0,0.25)',
-              background: 'rgba(255,0,0,0.10)',
-              color: '#ffd0d0',
-              fontWeight: 700,
-            }}
-          >
-            {banner}
-          </div>
-        ) : null}
-
-        {loading ? (
-          <div style={{ opacity: 0.8 }}>Carregando…</div>
-        ) : !student || !workout ? (
-          <div style={{ opacity: 0.85 }}>Treino não encontrado.</div>
-        ) : (
-          <>
-            <div
+    <div style={{ minHeight: '100vh', background: '#0B1711' }}>
+      <div style={{ maxWidth: 720, margin: '0 auto' }}>
+        <Topbar
+          title={preview ? 'Preview (QA)' : 'Treino'}
+          rightSlot={
+            <button
+              onClick={() => router.push(backUrl)}
               style={{
-                borderRadius: 18,
-                padding: 18,
-                background: 'rgba(255,255,255,0.06)',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-                marginBottom: 18,
+                background: 'transparent',
+                border: 'none',
+                color: '#9ad2ff',
+                fontWeight: 800,
+                cursor: 'pointer',
+                padding: 6,
               }}
             >
-              <div style={{ opacity: 0.9, fontWeight: 700 }}>Aluno</div>
-              <div style={{ fontSize: 28, fontWeight: 900, marginTop: 2 }}>{student.name}</div>
+              Voltar
+            </button>
+          }
+        />
 
-              <div style={{ marginTop: 10, opacity: 0.9 }}>
-                {(workout.template_type || '').toLowerCase() === 'easy_run' ? 'Rodagem' : 'Treino'} ·{' '}
-                {km(workout.total_km)}
-                {workout.planned_date ? ` · Planejado: ${formatBR(workout.planned_date)}` : ''}
-              </div>
-
-              <div style={{ marginTop: 10, opacity: 0.95 }}>
-                <div style={{ opacity: 0.85, fontWeight: 700 }}>Título</div>
-                <div style={{ fontSize: 20, fontWeight: 900 }}>{workout.title || '—'}</div>
-              </div>
-
-              <div style={{ marginTop: 8, opacity: 0.85 }}>
-                Status: <b>{workout.status ? workout.status : '—'}</b>
-              </div>
-            </div>
-
+        <div style={{ padding: 16 }}>
+          {banner && (
             <div
               style={{
-                borderRadius: 18,
-                padding: 18,
-                background: 'rgba(255,255,255,0.06)',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-                marginBottom: 18,
+                marginBottom: 12,
+                padding: 12,
+                borderRadius: 12,
+                background: 'rgba(255,0,0,0.10)',
+                border: '1px solid rgba(255,0,0,0.20)',
+                color: '#ffb3b3',
+                fontWeight: 700,
               }}
             >
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 8 }}>Detalhes</div>
-              <div style={{ opacity: 0.9 }}>
-                Aquecimento: {km(workout.warmup_km)} · Desaquecimento: {km(workout.cooldown_km)}
-              </div>
+              {banner}
             </div>
+          )}
 
-            <div
-              style={{
-                borderRadius: 18,
-                padding: 18,
-                background: 'rgba(255,255,255,0.06)',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-                marginBottom: 18,
-              }}
-            >
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 10 }}>Blocos</div>
-
-              {workout.blocks?.length ? (
-                <div style={{ display: 'grid', gap: 12 }}>
-                  {workout.blocks.map((b, idx) => (
-                    <div
-                      key={b.id || idx}
-                      style={{
-                        borderRadius: 14,
-                        padding: 14,
-                        border: '1px solid rgba(255,255,255,0.08)',
-                        background: 'rgba(0,0,0,0.20)',
-                      }}
-                    >
-                      <div style={{ fontWeight: 900, marginBottom: 6 }}>Bloco {idx + 1}</div>
-                      <div style={{ opacity: 0.92 }}>
-                        Distância: {b.distance_km !== null && b.distance_km !== undefined ? `${b.distance_km} km` : '—'}
-                      </div>
-                      <div style={{ opacity: 0.92 }}>Intensidade: {b.intensity || '—'}</div>
-                      <div style={{ opacity: 0.92 }}>Ritmo sugerido: {b.suggested_pace || '—'}</div>
-                      {b.notes ? <div style={{ opacity: 0.85, marginTop: 8 }}>Obs: {b.notes}</div> : null}
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div style={{ opacity: 0.85 }}>Sem blocos.</div>
-              )}
-            </div>
-
-            <div
-              style={{
-                borderRadius: 18,
-                padding: 18,
-                background: 'rgba(255,255,255,0.06)',
-                boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-                marginBottom: 22,
-              }}
-            >
-              <div style={{ fontSize: 18, fontWeight: 900, marginBottom: 10 }}>Execução</div>
-
-              <div style={{ opacity: 0.85, marginBottom: 8 }}>Status: {last?.status || '—'}</div>
-
-              <div style={{ display: 'grid', gap: 12 }}>
-                <div>
-                  <div style={{ opacity: 0.85, fontWeight: 700, marginBottom: 6 }}>Data realizada</div>
-                  <input
-                    type="date"
-                    value={performedAt}
-                    onChange={(e) => setPerformedAt(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: 12,
-                      borderRadius: 12,
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      background: 'rgba(0,0,0,0.25)',
-                      color: 'white',
-                    }}
-                  />
+          {loading ? (
+            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Carregando…</div>
+          ) : !workout ? (
+            <div style={{ color: 'rgba(255,255,255,0.7)' }}>Treino não encontrado.</div>
+          ) : (
+            <>
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ color: 'rgba(255,255,255,0.65)', fontWeight: 700 }}>Aluno</div>
+                <div style={{ fontSize: 24, fontWeight: 900, color: '#fff' }}>
+                  {studentName || '—'}
                 </div>
 
-                <div>
-                  <div style={{ opacity: 0.85, fontWeight: 700, marginBottom: 6 }}>Total realizado (km)</div>
-                  <input
-                    inputMode="decimal"
-                    placeholder="Ex: 6"
-                    value={actualKm}
-                    onChange={(e) => setActualKm(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: 12,
-                      borderRadius: 12,
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      background: 'rgba(0,0,0,0.25)',
-                      color: 'white',
-                    }}
-                  />
+                <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.8)' }}>
+                  <b>{workout.template_type === 'run' ? 'Rodagem' : workout.template_type || 'Treino'}</b>
+                  {workout.planned_distance_km != null ? ` • ${workout.planned_distance_km} km` : ''}
+                  {workout.planned_date ? ` • Planejado: ${formatBR(workout.planned_date)}` : ''}
                 </div>
 
-                <div>
-                  <div style={{ opacity: 0.85, fontWeight: 700, marginBottom: 6 }}>RPE (1 a 10)</div>
-                  <input
-                    inputMode="numeric"
-                    placeholder="Ex: 7"
-                    value={rpe}
-                    onChange={(e) => setRpe(e.target.value)}
-                    style={{
-                      width: '100%',
-                      padding: 12,
-                      borderRadius: 12,
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      background: 'rgba(0,0,0,0.25)',
-                      color: 'white',
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <div style={{ opacity: 0.85, fontWeight: 700, marginBottom: 6 }}>Comentário (opcional)</div>
-                  <textarea
-                    value={comment}
-                    onChange={(e) => setComment(e.target.value)}
-                    rows={4}
-                    style={{
-                      width: '100%',
-                      padding: 12,
-                      borderRadius: 12,
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      background: 'rgba(0,0,0,0.25)',
-                      color: 'white',
-                    }}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  {!isInProgress && !isCompleted ? (
-                    <Button onClick={start}>
-                      Registrar execução
-                    </Button>
-                  ) : null}
-
-                  {isInProgress ? (
-                    <Button onClick={complete}>Concluir</Button>
-                  ) : null}
-
-                  {isCompleted ? (
-                    <div style={{ opacity: 0.9, fontWeight: 800 }}>Execução registrada ✅</div>
-                  ) : null}
+                <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.85)' }}>
+                  <div style={{ color: 'rgba(255,255,255,0.6)', fontWeight: 700 }}>Título</div>
+                  <div style={{ fontSize: 18, fontWeight: 900 }}>{workout.title || '—'}</div>
                 </div>
               </div>
-            </div>
-          </>
-        )}
+
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Detalhes
+                </div>
+                <div style={{ color: 'rgba(255,255,255,0.80)' }}>
+                  Aquecimento: {workout.warmup_km != null ? `${workout.warmup_km} km` : '—'} •
+                  Desaquecimento: {workout.cooldown_km != null ? `${workout.cooldown_km} km` : '—'}
+                </div>
+                <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.8)' }}>
+                  Total estimado: <b>{totalPlanned} km</b>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Blocos
+                </div>
+
+                {(workout.blocks || []).length === 0 ? (
+                  <div style={{ color: 'rgba(255,255,255,0.7)' }}>Nenhum bloco definido.</div>
+                ) : (
+                  <div style={{ display: 'grid', gap: 10 }}>
+                    {(workout.blocks || [])
+                      .slice()
+                      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+                      .map((b, idx) => (
+                        <div
+                          key={b.id}
+                          style={{
+                            borderRadius: 14,
+                            padding: 12,
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            background: 'rgba(0,0,0,0.10)',
+                          }}
+                        >
+                          <div style={{ fontWeight: 900, color: '#fff' }}>Bloco {idx + 1}</div>
+                          <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.85)' }}>
+                            <b>{b.distance_km != null ? `${b.distance_km} km` : '—'}</b>
+                            {b.intensity ? ` • ${b.intensity}` : ''}
+                          </div>
+                          <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.85)' }}>
+                            Ritmo sugerido: <b>{b.suggested_pace || '—'}</b>
+                          </div>
+                          {b.notes ? (
+                            <div style={{ marginTop: 6, color: 'rgba(255,255,255,0.75)' }}>
+                              Obs: {b.notes}
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+
+              <div
+                style={{
+                  background: 'rgba(255,255,255,0.04)',
+                  border: '1px solid rgba(255,255,255,0.08)',
+                  borderRadius: 18,
+                  padding: 16,
+                  marginBottom: 24,
+                }}
+              >
+                <div style={{ fontSize: 20, fontWeight: 900, color: '#fff', marginBottom: 10 }}>
+                  Execução
+                </div>
+
+                <div style={{ color: 'rgba(255,255,255,0.75)', marginBottom: 10 }}>
+                  Status: <b>{lastExecution?.status || '—'}</b>
+                </div>
+
+                <label style={{ display: 'block', color: 'rgba(255,255,255,0.8)', fontWeight: 700 }}>
+                  Data realizada
+                </label>
+                <input
+                  type="date"
+                  value={performedAt}
+                  onChange={(e) => setPerformedAt(e.target.value)}
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  Total realizado (km)
+                </label>
+                <input
+                  inputMode="decimal"
+                  value={totalKm}
+                  onChange={(e) => setTotalKm(e.target.value)}
+                  placeholder="Ex.: 6"
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  RPE (1 a 10)
+                </label>
+                <input
+                  inputMode="numeric"
+                  value={rpe}
+                  onChange={(e) => setRpe(e.target.value)}
+                  placeholder="Ex.: 7"
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                  }}
+                />
+
+                <label
+                  style={{
+                    display: 'block',
+                    color: 'rgba(255,255,255,0.8)',
+                    fontWeight: 700,
+                    marginTop: 12,
+                  }}
+                >
+                  Comentário (opcional)
+                </label>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="Como foi o treino?"
+                  rows={4}
+                  style={{
+                    width: '100%',
+                    marginTop: 6,
+                    padding: 12,
+                    borderRadius: 12,
+                    border: '1px solid rgba(255,255,255,0.14)',
+                    background: 'rgba(0,0,0,0.18)',
+                    color: '#fff',
+                    outline: 'none',
+                    resize: 'vertical',
+                  }}
+                />
+
+                <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
+                  <button
+                    onClick={onStartOrSaveExecution}
+                    disabled={busy}
+                    style={{
+                      width: '100%',
+                      padding: '14px 16px',
+                      borderRadius: 14,
+                      border: 'none',
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                      background: '#26E07B',
+                      color: '#052113',
+                      fontWeight: 900,
+                      fontSize: 18,
+                    }}
+                  >
+                    Registrar execução
+                  </button>
+
+                  <button
+                    onClick={onCompleteExecution}
+                    disabled={busy || !lastExecution?.id}
+                    style={{
+                      width: '100%',
+                      padding: '12px 16px',
+                      borderRadius: 14,
+                      border: '1px solid rgba(255,255,255,0.18)',
+                      cursor: busy || !lastExecution?.id ? 'not-allowed' : 'pointer',
+                      background: 'rgba(255,255,255,0.06)',
+                      color: '#fff',
+                      fontWeight: 900,
+                      fontSize: 16,
+                    }}
+                  >
+                    Concluir
+                  </button>
+                </div>
+
+                {workout.planned_date ? (
+                  <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.65)' }}>
+                    Semana: {formatBR(workout.planned_date)} – {formatBR(addDaysISO(workout.planned_date, 6))}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
