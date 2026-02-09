@@ -135,7 +135,7 @@ export default function StudentPortalHomePage() {
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="font-semibold">Treinos disponíveis</div>
+                <div className="font-semibold">Treinos da semana</div>
 
                 {workouts.length === 0 ? (
                   <div className="mt-3 text-sm text-white/70">Nenhum treino publicado para esta semana ainda.</div>
@@ -143,12 +143,16 @@ export default function StudentPortalHomePage() {
                   <div className="mt-3 space-y-3">
                     {workouts.map((w: any) => {
                       const ex = latest[w.id];
+
                       const progress =
-                        ex?.status === 'completed'
-                          ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
-                          : ex?.status === 'in_progress'
-                            ? 'Em andamento'
-                            : '—';
+                        w.portal_progress_label ||
+                        (w.status === 'canceled'
+                          ? 'Cancelado'
+                          : ex?.status === 'completed'
+                            ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
+                            : ex?.status === 'in_progress'
+                              ? 'Em andamento'
+                              : '—');
 
                       const title = w.title || TEMPLATE_LABEL[w.template_type] || 'Treino';
                       const tpl = TEMPLATE_LABEL[w.template_type] || w.template_type;

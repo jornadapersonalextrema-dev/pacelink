@@ -78,6 +78,34 @@ function formatWeekLabel(weekStartISO: string, weekEndISO: string) {
   return `Semana ${formatBRShort(weekStartISO)} – ${formatBRShort(weekEndISO)}`;
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  draft: 'Rascunho',
+  ready: 'Disponível',
+  archived: 'Encerrado',
+  canceled: 'Cancelado',
+};
+
+function statusLabel(status: any) {
+  const s = String(status || '').trim();
+  return STATUS_LABEL[s] || (s ? s : '—');
+}
+
+function progressLabel(workoutStatus: any, latestExecution: any) {
+  const st = String(workoutStatus || '').trim();
+
+  if (st === 'canceled') return 'Cancelado';
+
+  const exStatus = String(latestExecution?.status || '').trim();
+  if (exStatus === 'completed') {
+    const dt = latestExecution?.performed_at || latestExecution?.completed_at || null;
+    if (dt) return `Concluído (${formatBRShort(String(dt))})`;
+    return 'Concluído';
+  }
+  if (exStatus === 'in_progress' || exStatus === 'running' || exStatus === 'paused') return 'Em andamento';
+
+  return '—';
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -130,13 +158,13 @@ export async function GET(req: Request) {
 
     const weekRow = wk as any;
 
-    // Treinos desta semana (aluno vê somente published/encerrados, nunca "draft")
+    // Treinos desta semana (aluno vê somente published/encerrados/cancelados, nunca "draft")
     const { data: ws, error: wErr } = await supabase
       .from('workouts')
       .select('id,title,template_type,total_km,planned_date,planned_day,status,locked_at,week_id,created_at')
       .eq('student_id', st.id)
       .eq('week_id', weekRow.id)
-      .in('status', ['ready', 'archived'])
+      .in('status', ['ready', 'archived', 'canceled'])
       .order('planned_day', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
 
@@ -150,7 +178,9 @@ export async function GET(req: Request) {
     if (ids.length > 0) {
       const { data: ex } = await supabase
         .from('executions')
-        .select('id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km')
+        .select(
+          'id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km'
+        )
         .in('workout_id', ids)
         .order('last_event_at', { ascending: false, nullsFirst: false });
 
@@ -161,16 +191,45 @@ export async function GET(req: Request) {
       }
     }
 
+    // Ordena para deixar "Cancelado" no final (sem mexer no banco)
+    const rank = (s: any) => {
+      const st = String(s || '');
+      if (st === 'canceled') return 2;
+      if (st === 'archived') return 1;
+      return 0; // ready
+    };
+    workouts.sort((a, b) => {
+      const ra = rank(a.status);
+      const rb = rank(b.status);
+      if (ra !== rb) return ra - rb;
+      const pa = a.planned_day == null ? 999 : Number(a.planned_day);
+      const pb = b.planned_day == null ? 999 : Number(b.planned_day);
+      if (pa !== pb) return pa - pb;
+      const ca = String(a.created_at || '');
+      const cb = String(b.created_at || '');
+      return ca.localeCompare(cb);
+    });
+
     const ready = workouts.filter((w) => w.status === 'ready').length;
+    const canceled = workouts.filter((w) => w.status === 'canceled').length;
     const completed = workouts.filter((w) => latestByWorkout[w.id]?.status === 'completed').length;
     const pending = Math.max(0, ready - completed);
+
+    const workouts_out = workouts.map((w) => {
+      const ex = latestByWorkout[w.id];
+      return {
+        ...w,
+        status_label: statusLabel(w.status),
+        portal_progress_label: progressLabel(w.status, ex),
+      };
+    });
 
     return NextResponse.json({
       ok: true,
       student: { id: st.id, name: st.name, public_slug: st.public_slug },
       week: { id: weekRow.id, week_start, week_end, label: weekRow.label || label },
-      counts: { planned: workouts.length, ready, completed, pending },
-      workouts,
+      counts: { planned: workouts.length, ready, completed, pending, canceled },
+      workouts: workouts_out,
       latest_execution_by_workout: latestByWorkout,
     });
   } catch (e: any) {
