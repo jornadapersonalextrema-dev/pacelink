@@ -467,6 +467,14 @@ export default function TrainerStudentPage() {
               Compartilhar portal
             </button>
 
+            <button
+              className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold"
+              onClick={() => router.push(`/students/${studentId}/reports/4w`)}
+              title="Abrir relatório consolidado das últimas 4 semanas"
+            >
+              Relatório 4 semanas
+            </button>
+
             <button className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold" onClick={openPortalPreview}>
               Ver como aluno (QA)
             </button>
@@ -490,6 +498,16 @@ export default function TrainerStudentPage() {
                   </div>
                 </div>
 
+                <div className="flex items-center gap-2">
+                <button
+                  className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
+                  disabled={!selectedWeekId}
+                  onClick={() => router.push(`/dashboard/week/${selectedWeekId}`)}
+                  title="Abrir painel consolidado da semana"
+                >
+                  Painel da semana
+                </button>
+
                 <button
                   className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
                   disabled={!selectedWeekId || draftCount === 0}
@@ -498,6 +516,7 @@ export default function TrainerStudentPage() {
                 >
                   Publicar semana
                 </button>
+              </div>
               </div>
 
               {weeks.length === 0 ? (
