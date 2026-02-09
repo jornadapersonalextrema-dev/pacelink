@@ -41,12 +41,10 @@ async function readPayload(req: Request) {
   const slug = String(body?.slug ?? qp.get('slug') ?? '').trim();
   const t = String(body?.t ?? qp.get('t') ?? '').trim();
   const workoutId = String(body?.workoutId ?? qp.get('workoutId') ?? qp.get('id') ?? '').trim();
-  const performedAt =
-    String(body?.performedAt ?? body?.performed_at ?? qp.get('performedAt') ?? qp.get('performed_at') ?? '').trim() ||
-    null;
+  const performedAt = String(body?.performedAt ?? qp.get('performedAt') ?? '').trim() || null;
 
-  const previewRaw = body?.preview ?? qp.get('preview') ?? null;
-  const preview = previewRaw === true || previewRaw === 1 || previewRaw === '1';
+  const previewRaw = body?.preview ?? qp.get('preview') ?? '0';
+  const preview = String(previewRaw) === '1' || String(previewRaw).toLowerCase() === 'true';
 
   return { slug, t, workoutId, performedAt, preview };
 }
@@ -100,11 +98,31 @@ export async function POST(req: Request) {
       );
     }
 
+    // Se já houver execução concluída, não permite iniciar novamente (exceto em preview/QA)
+    if (!preview) {
+      const { data: completedExecs, error: cErr } = await supabase
+        .from('executions')
+        .select('id')
+        .eq('workout_id', workoutId)
+        .eq('student_id', st.id)
+        .eq('status', 'completed')
+        .limit(1);
+
+      if (cErr) return NextResponse.json({ ok: false, error: cErr.message }, { status: 500 });
+      if (completedExecs && completedExecs.length > 0) {
+        return NextResponse.json(
+          { ok: false, error: 'Execução já registrada. Não é possível alterar.' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Reaproveita se já tem execução ativa
     const { data: activeExecs } = await supabase
       .from('executions')
       .select('id,status,started_at,last_event_at')
       .eq('workout_id', workoutId)
+      .eq('student_id', st.id)
       .in('status', ['running', 'paused'])
       .order('last_event_at', { ascending: false, nullsFirst: false })
       .limit(1);

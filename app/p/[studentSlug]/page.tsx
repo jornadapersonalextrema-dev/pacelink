@@ -104,7 +104,7 @@ export default function StudentPortalHomePage() {
               {week ? (week.label || `Semana ${formatBRShort(week.week_start)} – ${formatBRShort(week.week_end)}`) : '—'}
             </div>
             {preview ? (
-              <div className="mt-1 text-xs text-amber-200">Modo preview (QA do treinador): registro de execução desabilitado.</div>
+              <div className="mt-1 text-xs text-amber-200">Modo de teste (QA do treinador): registro de execução desabilitado.</div>
             ) : null}
           </div>
 

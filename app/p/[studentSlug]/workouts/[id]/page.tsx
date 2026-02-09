@@ -56,6 +56,48 @@ function addDaysISO(iso: string, days: number) {
   return toISODate(dt);
 }
 
+const TEMPLATE_LABEL_PT: Record<string, string> = {
+  easy_run: 'Rodagem',
+  run: 'Treino',
+  progressive: 'Progressivo',
+  alternated: 'Alternado',
+};
+
+function workoutTypeLabel(tpl: string | null) {
+  if (!tpl) return 'Treino';
+  const key = String(tpl).trim().toLowerCase();
+  return TEMPLATE_LABEL_PT[key] || tpl;
+}
+
+const EXEC_STATUS_PT: Record<string, string> = {
+  running: 'em andamento',
+  paused: 'pausado',
+  completed: 'concluído',
+};
+
+function executionStatusLabel(st: string | null) {
+  if (!st) return '—';
+  const key = String(st).trim().toLowerCase();
+  return EXEC_STATUS_PT[key] || st;
+}
+
+function weekRangeMonday(iso: string) {
+  const [yS, mS, dS] = iso.split('-');
+  const y = Number(yS);
+  const m = Number(mS);
+  const d = Number(dS);
+  // Importante: cria Date em timezone local para evitar "pular" um dia ao parsear YYYY-MM-DD
+  const dt = new Date(y || 1970, (m || 1) - 1, d || 1);
+  const day = dt.getDay(); // 0 = Domingo, 1 = Segunda, ...
+  const offset = (day + 6) % 7; // Segunda => 0
+  dt.setDate(dt.getDate() - offset);
+  const start = toISODate(dt);
+  const endDt = new Date(dt.getTime());
+  endDt.setDate(endDt.getDate() + 6);
+  const end = toISODate(endDt);
+  return { start, end };
+}
+
 async function safeReadJson(res: Response): Promise<any | null> {
   const txt = await res.text();
   if (!txt) return null;
@@ -177,8 +219,20 @@ export default function StudentWorkoutPage() {
     return Math.round((warm + blocksKm + cool) * 10) / 10;
   }, [workout]);
 
+  const isLocked = (lastExecution?.status || '').toLowerCase() === 'completed';
+
   async function onRegisterExecution() {
     if (!workout) return;
+
+    if (isLocked) {
+      setBanner('Execução já registrada. Não é possível alterar os dados.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Confirma o registro da execução?\n\nDepois de salvar, não será possível alterar Data, Total realizado, Esforço percebido e Comentário.`
+    );
+    if (!confirmed) return;
 
     try {
       setBusy(true);
@@ -261,15 +315,15 @@ export default function StudentWorkoutPage() {
     <div style={{ minHeight: '100vh', background: '#0B1711' }}>
       <div style={{ maxWidth: 720, margin: '0 auto' }}>
         <Topbar
-          title={preview ? 'Preview (QA)' : 'Treino'}
+          title={preview ? 'Modo de teste (QA)' : 'Treino'}
           rightSlot={
             <button
               onClick={() => router.push(backUrl)}
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: '#9ad2ff',
-                fontWeight: 800,
+                color: '#fff',
+                fontWeight: 900,
                 cursor: 'pointer',
                 padding: 6,
               }}
@@ -317,7 +371,7 @@ export default function StudentWorkoutPage() {
                 </div>
 
                 <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.8)' }}>
-                  <b>{workout.template_type === 'run' ? 'Rodagem' : workout.template_type || 'Treino'}</b>
+                  <b>{workoutTypeLabel(workout.template_type)}</b>
                   {workout.planned_distance_km != null ? ` • ${workout.planned_distance_km} km` : ''}
                   {workout.planned_date ? ` • Planejado: ${formatBR(workout.planned_date)}` : ''}
                 </div>
@@ -412,14 +466,21 @@ export default function StudentWorkoutPage() {
                 </div>
 
                 <div style={{ color: 'rgba(255,255,255,0.75)', marginBottom: 10 }}>
-                  Status: <b>{lastExecution?.status || '—'}</b>
+                  Status: <b>{executionStatusLabel(lastExecution?.status || null)}</b>
                 </div>
+
+                {isLocked ? (
+                  <div style={{ marginBottom: 10, padding: 10, borderRadius: 12, background: 'rgba(38,224,123,0.10)', border: '1px solid rgba(38,224,123,0.25)', color: 'rgba(255,255,255,0.85)', fontWeight: 700 }}>
+                    Execução já registrada. Os dados não podem mais ser alterados.
+                  </div>
+                ) : null}
 
                 <label style={{ display: 'block', color: 'rgba(255,255,255,0.8)', fontWeight: 700 }}>
                   Data realizada
                 </label>
                 <input
                   type="date"
+                  disabled={busy || isLocked}
                   value={performedAt}
                   onChange={(e) => setPerformedAt(e.target.value)}
                   style={{
@@ -446,6 +507,7 @@ export default function StudentWorkoutPage() {
                 </label>
                 <input
                   inputMode="decimal"
+                  disabled={busy || isLocked}
                   value={totalKm}
                   onChange={(e) => setTotalKm(e.target.value)}
                   placeholder="Ex.: 6"
@@ -469,10 +531,14 @@ export default function StudentWorkoutPage() {
                     marginTop: 12,
                   }}
                 >
-                  RPE (1 a 10)
+                  Esforço percebido (1 a 10)
                 </label>
+                <div style={{ marginTop: 4, color: 'rgba(255,255,255,0.60)', fontSize: 13 }}>
+                  1 = muito leve • 10 = esforço máximo
+                </div>
                 <input
                   inputMode="numeric"
+                  disabled={busy || isLocked}
                   value={rpe}
                   onChange={(e) => setRpe(e.target.value)}
                   placeholder="Ex.: 7"
@@ -499,6 +565,7 @@ export default function StudentWorkoutPage() {
                   Comentário (opcional)
                 </label>
                 <textarea
+                  disabled={busy || isLocked}
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
                   placeholder="Como foi o treino?"
@@ -519,26 +586,26 @@ export default function StudentWorkoutPage() {
                 <div style={{ marginTop: 14, display: 'grid', gap: 10 }}>
                   <button
                     onClick={onRegisterExecution}
-                    disabled={busy}
+                    disabled={busy || isLocked}
                     style={{
                       width: '100%',
                       padding: '14px 16px',
                       borderRadius: 14,
                       border: 'none',
-                      cursor: busy ? 'not-allowed' : 'pointer',
+                      cursor: busy || isLocked ? 'not-allowed' : 'pointer',
                       background: '#26E07B',
                       color: '#052113',
                       fontWeight: 900,
                       fontSize: 18,
                     }}
                   >
-                    {busy ? 'Salvando…' : 'Registrar execução'}
+                    {isLocked ? 'Execução registrada' : busy ? 'Salvando…' : 'Registrar execução'}
                   </button>
                 </div>
 
                 {workout.planned_date ? (
                   <div style={{ marginTop: 10, color: 'rgba(255,255,255,0.65)' }}>
-                    Semana: {formatBR(workout.planned_date)} – {formatBR(addDaysISO(workout.planned_date, 6))}
+                    Semana: {formatBR(weekRangeMonday(workout.planned_date).start)} – {formatBR(weekRangeMonday(workout.planned_date).end)}
                   </div>
                 ) : null}
               </div>
