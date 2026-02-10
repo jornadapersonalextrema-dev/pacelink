@@ -17,7 +17,7 @@ type StudentRow = {
 type WeekRow = {
   id: string;
   week_start: string;
-  week_end: string;
+  week_end: string | null;
   label: string | null;
 };
 
@@ -26,7 +26,9 @@ type WorkoutRow = {
   student_id: string;
   trainer_id: string;
   week_id: string | null;
-  status: 'draft' | 'ready' | 'archived';
+  planned_date: string | null;
+  planned_day: number | null;
+  status: 'draft' | 'ready' | 'archived' | 'canceled';
   template_type: string;
   title: string | null;
   include_warmup: boolean;
@@ -49,6 +51,28 @@ type BlockDraft = {
 
 function pad2(n: number) {
   return String(n).padStart(2, '0');
+}
+
+
+function isoToUTCDate(iso: string) {
+  // iso: YYYY-MM-DD
+  const [y, m, d] = String(iso).split('-').map((x) => Number(x));
+  return new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+}
+
+function addDaysIso(iso: string, days: number) {
+  const dt = isoToUTCDate(iso);
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const y = dt.getUTCFullYear();
+  const m = pad2(dt.getUTCMonth() + 1);
+  const d = pad2(dt.getUTCDate());
+  return `${y}-${m}-${d}`;
+}
+
+function diffDays(fromIso: string, toIso: string) {
+  const a = isoToUTCDate(fromIso).getTime();
+  const b = isoToUTCDate(toIso).getTime();
+  return Math.round((b - a) / 86400000);
 }
 
 function formatBR(iso: string | null) {
@@ -136,6 +160,10 @@ export default function WorkoutEditPage() {
   const [includeCooldown, setIncludeCooldown] = useState(false);
   const [cooldownKm, setCooldownKm] = useState('');
 
+  const [plannedDate, setPlannedDate] = useState('');
+  const [plannedDateError, setPlannedDateError] = useState<string | null>(null);
+
+
   const [blocks, setBlocks] = useState<BlockDraft[]>([
     { id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' },
   ]);
@@ -147,7 +175,7 @@ export default function WorkoutEditPage() {
     // workout
     const { data: w, error: wErr } = await supabase
       .from('workouts')
-      .select('id,student_id,trainer_id,week_id,status,template_type,title,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,locked_at,created_at')
+      .select('id,student_id,trainer_id,week_id,planned_date,planned_day,status,template_type,title,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,locked_at,created_at')
       .eq('id', workoutId)
       .maybeSingle();
 
@@ -223,6 +251,9 @@ export default function WorkoutEditPage() {
     setIncludeCooldown(!!(w as any).include_cooldown);
     setCooldownKm((w as any).cooldown_km != null ? kmLabel((w as any).cooldown_km) : '');
 
+    setPlannedDate((w as any).planned_date || '');
+    setPlannedDateError(null);
+
     const rawBlocks = Array.isArray((w as any).blocks) ? ((w as any).blocks as any[]) : [];
     setBlocks(
       rawBlocks.length > 0
@@ -278,13 +309,37 @@ export default function WorkoutEditPage() {
 
     setBanner(null);
 
+    // Data prevista deve estar dentro da semana planejada
+    if (workout.week_id) {
+      if (!weekStartIso || !weekEndIso) {
+        setPlannedDateError('Não foi possível determinar a semana deste treino.');
+        setBanner('Semana do treino não encontrada.');
+        return;
+      }
+      if (!plannedDate) {
+        setPlannedDateError('Informe a data prevista.');
+        setBanner('Informe a data prevista para este treino.');
+        return;
+      }
+      if (plannedDate < weekStartIso || plannedDate > weekEndIso) {
+        setPlannedDateError(`A data prevista deve estar entre ${formatBR(weekStartIso)} e ${formatBR(weekEndIso)}.`);
+        setBanner('A data prevista deve estar dentro da semana planejada.');
+        return;
+      }
+      setPlannedDateError(null);
+    }
+
     const warm = includeWarmup ? parseKm(warmupKm) : 0;
     const cool = includeCooldown ? parseKm(cooldownKm) : 0;
     const blocksKm = sumBlocksKm(blocks);
     const totalKm = warm + cool + blocksKm;
 
+    const plannedDay = workout.week_id && plannedDate && weekStartIso ? diffDays(weekStartIso, plannedDate) : null;
+
     const payload = {
       title: title || null,
+      planned_date: workout.week_id ? plannedDate : null,
+      planned_day: workout.week_id ? plannedDay : null,
       include_warmup: includeWarmup,
       warmup_km: includeWarmup ? warm : null,
       include_cooldown: includeCooldown,
@@ -307,7 +362,32 @@ export default function WorkoutEditPage() {
     if (!workout) return;
     setBanner(null);
 
-    const { error } = await supabase.from('workouts').update({ status: 'ready' }).eq('id', workout.id);
+    // Se o treino pertence a uma semana, a data prevista precisa estar dentro dela
+    if (workout.week_id) {
+      if (!weekStartIso || !weekEndIso) {
+        setPlannedDateError('Não foi possível determinar a semana deste treino.');
+        setBanner('Semana do treino não encontrada.');
+        return;
+      }
+      if (!plannedDate) {
+        setPlannedDateError('Informe a data prevista.');
+        setBanner('Informe a data prevista para publicar este treino.');
+        return;
+      }
+      if (plannedDate < weekStartIso || plannedDate > weekEndIso) {
+        setPlannedDateError(`A data prevista deve estar entre ${formatBR(weekStartIso)} e ${formatBR(weekEndIso)}.`);
+        setBanner('A data prevista deve estar dentro da semana planejada.');
+        return;
+      }
+      setPlannedDateError(null);
+    }
+
+    const plannedDay = workout.week_id && plannedDate && weekStartIso ? diffDays(weekStartIso, plannedDate) : null;
+
+    const { error } = await supabase
+      .from('workouts')
+      .update({ status: 'ready', planned_date: workout.week_id ? plannedDate : null, planned_day: workout.week_id ? plannedDay : null })
+      .eq('id', workout.id);
     if (error) {
       setBanner(error.message);
       return;
@@ -354,7 +434,12 @@ export default function WorkoutEditPage() {
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
-  const weekLabel = week ? (week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(week.week_end)}`) : '—';
+  const weekStartIso = week?.week_start || null;
+  const weekEndIso = weekStartIso ? (week?.week_end || addDaysIso(weekStartIso, 6)) : null;
+
+  const weekLabel = week
+    ? week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(weekEndIso)}`
+    : '—';
   const totalPreview = (() => {
     const warm = includeWarmup ? parseKm(warmupKm) : 0;
     const cool = includeCooldown ? parseKm(cooldownKm) : 0;
@@ -384,6 +469,31 @@ export default function WorkoutEditPage() {
                 Voltar
               </button>
             </div>
+          </div>
+
+
+          <div className="mt-4">
+            <div className="text-sm text-slate-600 dark:text-slate-300">Data prevista</div>
+            <input
+              type="date"
+              className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+              value={plannedDate}
+              min={weekStartIso || undefined}
+              max={weekEndIso || undefined}
+              onChange={(e) => {
+                setPlannedDate(e.target.value);
+                setPlannedDateError(null);
+              }}
+              disabled={locked}
+            />
+            {weekStartIso && weekEndIso ? (
+              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Deve estar entre <b>{formatBR(weekStartIso)}</b> e <b>{formatBR(weekEndIso)}</b>.
+              </div>
+            ) : null}
+            {plannedDateError ? (
+              <div className="mt-2 text-xs text-amber-800 dark:text-amber-200">{plannedDateError}</div>
+            ) : null}
           </div>
 
           <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
