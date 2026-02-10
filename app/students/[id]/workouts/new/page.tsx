@@ -18,7 +18,7 @@ type WorkoutRow = {
   id: string;
   trainer_id: string;
   student_id: string;
-  status: 'draft' | 'ready' | 'archived';
+  status: 'draft' | 'ready' | 'archived' | 'canceled';
   template_type: string;
   include_warmup: boolean;
   warmup_km: number;
@@ -26,6 +26,8 @@ type WorkoutRow = {
   cooldown_km: number;
   blocks: any[];
   total_km: number;
+  planned_date?: string | null;
+  planned_day?: number | null;
   share_slug: string | null;
   created_at: string;
   title: string | null;
@@ -57,6 +59,35 @@ function formatWeekLabel(weekStart: string, weekEnd: string) {
   const [ye, me, de] = String(weekEnd).split('-');
   if (!ys || !ms || !ds || !ye || !me || !de) return `Semana ${weekStart} – ${weekEnd}`;
   return `Semana ${ds}/${ms} – ${de}/${me}`;
+}
+
+
+function toISODate(d: Date) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function addDaysISO(isoDate: string, days: number) {
+  // isoDate esperado: YYYY-MM-DD
+  const d = new Date(`${isoDate}T00:00:00`);
+  d.setDate(d.getDate() + days);
+  return toISODate(d);
+}
+
+function diffDaysISO(weekStartISO: string, dateISO: string) {
+  const a = new Date(`${weekStartISO}T00:00:00`);
+  const b = new Date(`${dateISO}T00:00:00`);
+  const ms = b.getTime() - a.getTime();
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+}
+
+function formatDateBR(iso: string | null | undefined) {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return String(iso);
+  return `${d}/${m}/${y}`;
 }
 
 
@@ -102,7 +133,14 @@ export default function NewWorkoutPage() {
   const [student, setStudent] = useState<StudentRow | null>(null);
   const [week, setWeek] = useState<WeekRow | null>(null);
 
+  const weekStartISO = week?.week_start || '';
+  const weekEndISO = useMemo(() => {
+    if (!week?.week_start) return '';
+    return week?.week_end || addDaysISO(week.week_start, 6);
+  }, [week?.week_start, week?.week_end]);
+
   const [title, setTitle] = useState<string>('Treino');
+  const [plannedDate, setPlannedDate] = useState<string>('');
   const [includeWarmup, setIncludeWarmup] = useState(true);
   const [warmupKm, setWarmupKm] = useState<string>('1');
   const [includeCooldown, setIncludeCooldown] = useState(true);
@@ -113,14 +151,15 @@ export default function NewWorkoutPage() {
     { id: uid(), distanceKm: '1', intensity: 'forte', paceStr: '', note: '' },
   ]);
 
-  const warmupKmNum = useMemo(() => parseKm(warmupKm), [warmupKm]);
-  const cooldownKmNum = useMemo(() => parseKm(cooldownKm), [cooldownKm]);
-
-
   const totalKm = useMemo(
-    () => computeTotalKm(includeWarmup ? warmupKmNum : 0, includeCooldown ? cooldownKmNum : 0, blocks),
-    [includeWarmup, warmupKmNum, includeCooldown, cooldownKmNum, blocks]
+    () => computeTotalKm(includeWarmup ? Math.max(0.1, parseKm(warmupKm)) : 0, includeCooldown ? Math.max(0.1, parseKm(cooldownKm)) : 0, blocks),
+    [includeWarmup, warmupKm, includeCooldown, cooldownKm, blocks]
   );
+
+  useEffect(() => {
+    // default: se veio por semana, já deixa a data prevista como o início da semana
+    if (weekStartISO && !plannedDate) setPlannedDate(weekStartISO);
+  }, [weekStartISO, plannedDate]);
 
   useEffect(() => {
     let mounted = true;
@@ -222,6 +261,9 @@ export default function NewWorkoutPage() {
       const trainerId = session?.session?.user?.id;
       if (!trainerId) throw new Error('Você precisa estar logado como treinador.');
 
+      const warm = Math.max(0.1, parseKm(warmupKm));
+      const cool = Math.max(0.1, parseKm(cooldownKm));
+
       const payload: Partial<WorkoutRow> & { blocks: any[] } = {
         trainer_id: trainerId,
         student_id: student.id,
@@ -229,9 +271,9 @@ export default function NewWorkoutPage() {
         template_type: 'easy_run',
         title: title?.trim() || null,
         include_warmup: includeWarmup,
-        warmup_km: includeWarmup ? warmupKmNum : 0,
+        warmup_km: warm,
         include_cooldown: includeCooldown,
-        cooldown_km: includeCooldown ? cooldownKmNum : 0,
+        cooldown_km: cool,
         total_km: totalKm,
         share_slug: null,
         blocks: blocks.map((b) => ({
@@ -245,6 +287,21 @@ export default function NewWorkoutPage() {
       // vínculo com semana (se veio pela tela de semana)
       const insertPayload: any = { ...payload };
       if (weekId) insertPayload.week_id = weekId;
+
+      // data prevista (para aparecer no calendário semanal)
+      if (weekId) {
+        if (!plannedDate) {
+          throw new Error('Informe a data prevista para realização do treino.');
+        }
+        if (weekStartISO) {
+          const day = diffDaysISO(weekStartISO, plannedDate);
+          if (day < 0 || day > 6) {
+            throw new Error(`A data prevista precisa estar dentro da semana (${formatDateBR(weekStartISO)} – ${formatDateBR(weekEndISO)}).`);
+          }
+          insertPayload.planned_day = day;
+        }
+        insertPayload.planned_date = plannedDate;
+      }
 
       const { data: inserted, error } = await supabase
         .from('workouts')
@@ -324,6 +381,26 @@ export default function NewWorkoutPage() {
             </div>
           </div>
 
+          {weekStartISO && (
+            <div className="mt-4">
+              <div className="text-sm text-white/60 mb-1">Data prevista</div>
+              <input
+                type="date"
+                value={plannedDate}
+                onChange={(e) => setPlannedDate(e.target.value)}
+                min={weekStartISO || undefined}
+                max={weekEndISO || undefined}
+                className="w-full md:w-64 h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+              />
+              {weekStartISO && weekEndISO && (
+                <div className="mt-1 text-xs text-white/50">
+                  Selecione uma data dentro da semana ({formatDateBR(weekStartISO)} – {formatDateBR(weekEndISO)}).
+                </div>
+              )}
+            </div>
+          )}
+
+
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} />
@@ -336,7 +413,7 @@ export default function NewWorkoutPage() {
               onChange={(e) => setWarmupKm(e.target.value)}
               type="number"
               step="0.5"
-              min="0"
+              min="0.1"
               className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
             />
             <span className="text-white/60">km</span>
@@ -352,7 +429,7 @@ export default function NewWorkoutPage() {
               onChange={(e) => setCooldownKm(e.target.value)}
               type="number"
               step="0.5"
-              min="0"
+              min="0.1"
               className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
             />
             <span className="text-white/60">km</span>
