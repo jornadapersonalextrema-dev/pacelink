@@ -473,6 +473,17 @@ export default function WorkoutEditPage() {
 
 
           <div className="mt-4">
+            <div className="text-sm text-slate-600 dark:text-slate-300">Título</div>
+            <input
+              className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Ex: Rodagem leve"
+              disabled={locked}
+            />
+          </div>
+
+          <div className="mt-4">
             <div className="text-sm text-slate-600 dark:text-slate-300">Data prevista</div>
             <input
               type="date"
