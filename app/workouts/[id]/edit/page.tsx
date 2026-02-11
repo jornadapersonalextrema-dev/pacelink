@@ -39,6 +39,8 @@ type WorkoutRow = {
   total_km: number;
   locked_at: string | null;
   created_at: string;
+  updated_at: string | null;
+  published_at: string | null;
 };
 
 type BlockDraft = {
@@ -52,7 +54,6 @@ type BlockDraft = {
 function pad2(n: number) {
   return String(n).padStart(2, '0');
 }
-
 
 function isoToUTCDate(iso: string) {
   // iso: YYYY-MM-DD
@@ -80,6 +81,24 @@ function formatBR(iso: string | null) {
   const [y, m, d] = String(iso).split('-');
   if (!y || !m || !d) return String(iso);
   return `${d}/${m}/${y}`;
+}
+
+function toMs(ts: string | null | undefined) {
+  if (!ts) return null;
+  const ms = Date.parse(ts);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function workoutNeedsRepublish(w: { status: string; updated_at?: string | null; published_at?: string | null }) {
+  if (w.status !== 'ready') return false;
+  const pub = toMs(w.published_at ?? null);
+  const upd = toMs(w.updated_at ?? null);
+
+  // se published_at ainda não existe/foi preenchido (dados antigos), permite "Republicar" para corrigir
+  if (pub == null && upd != null) return true;
+  if (pub == null || upd == null) return false;
+
+  return upd > pub;
 }
 
 function kmLabel(km: number | null) {
@@ -163,10 +182,7 @@ export default function WorkoutEditPage() {
   const [plannedDate, setPlannedDate] = useState('');
   const [plannedDateError, setPlannedDateError] = useState<string | null>(null);
 
-
-  const [blocks, setBlocks] = useState<BlockDraft[]>([
-    { id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' },
-  ]);
+  const [blocks, setBlocks] = useState<BlockDraft[]>([{ id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' }]);
 
   async function loadAll() {
     setLoading(true);
@@ -175,7 +191,9 @@ export default function WorkoutEditPage() {
     // workout
     const { data: w, error: wErr } = await supabase
       .from('workouts')
-      .select('id,student_id,trainer_id,week_id,planned_date,planned_day,status,template_type,title,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,locked_at,created_at')
+      .select(
+        'id,student_id,trainer_id,week_id,planned_date,planned_day,status,template_type,title,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km,locked_at,created_at,updated_at,published_at'
+      )
       .eq('id', workoutId)
       .maybeSingle();
 
@@ -208,20 +226,12 @@ export default function WorkoutEditPage() {
 
     // week (fallback weeks -> training_weeks)
     if ((w as any).week_id) {
-      const res1 = await supabase
-        .from('weeks')
-        .select('id,week_start,week_end,label')
-        .eq('id', (w as any).week_id)
-        .maybeSingle();
+      const res1 = await supabase.from('weeks').select('id,week_start,week_end,label').eq('id', (w as any).week_id).maybeSingle();
 
       if (!res1.error) {
         setWeek(res1.data as any);
       } else if (String(res1.error.message || '').toLowerCase().includes('relation') && String(res1.error.message).includes('weeks')) {
-        const res2 = await supabase
-          .from('training_weeks')
-          .select('id,week_start,week_end,label')
-          .eq('id', (w as any).week_id)
-          .maybeSingle();
+        const res2 = await supabase.from('training_weeks').select('id,week_start,week_end,label').eq('id', (w as any).week_id).maybeSingle();
         if (res2.error) {
           setBanner(res2.error.message);
           setLoading(false);
@@ -236,10 +246,7 @@ export default function WorkoutEditPage() {
     }
 
     // lock check (any execution)
-    const { count } = await supabase
-      .from('executions')
-      .select('*', { count: 'exact', head: true })
-      .eq('workout_id', workoutId);
+    const { count } = await supabase.from('executions').select('*', { count: 'exact', head: true }).eq('workout_id', workoutId);
 
     const isLocked = !!(w as any).locked_at || (count || 0) > 0;
     setLocked(isLocked);
@@ -362,6 +369,8 @@ export default function WorkoutEditPage() {
     if (!workout) return;
     setBanner(null);
 
+    const now = new Date().toISOString();
+
     // Se o treino pertence a uma semana, a data prevista precisa estar dentro dela
     if (workout.week_id) {
       if (!weekStartIso || !weekEndIso) {
@@ -371,7 +380,7 @@ export default function WorkoutEditPage() {
       }
       if (!plannedDate) {
         setPlannedDateError('Informe a data prevista.');
-        setBanner('Informe a data prevista para publicar este treino.');
+        setBanner(workout.status === 'ready' ? 'Informe a data prevista para republicar este treino.' : 'Informe a data prevista para publicar este treino.');
         return;
       }
       if (plannedDate < weekStartIso || plannedDate > weekEndIso) {
@@ -384,10 +393,38 @@ export default function WorkoutEditPage() {
 
     const plannedDay = workout.week_id && plannedDate && weekStartIso ? diffDays(weekStartIso, plannedDate) : null;
 
+    if (workout.status === 'ready') {
+      // ✅ republica: marca um novo "published_at" para refletir as alterações
+      const { error } = await supabase
+        .from('workouts')
+        .update({
+          published_at: now,
+          planned_date: workout.week_id ? plannedDate : null,
+          planned_day: workout.week_id ? plannedDay : null,
+        })
+        .eq('id', workout.id);
+
+      if (error) {
+        setBanner(error.message);
+        return;
+      }
+
+      setBanner('Treino republicado (alterações aplicadas para o aluno).');
+      await loadAll();
+      return;
+    }
+
+    // ✅ publica (rascunho -> ready)
     const { error } = await supabase
       .from('workouts')
-      .update({ status: 'ready', planned_date: workout.week_id ? plannedDate : null, planned_day: workout.week_id ? plannedDay : null })
+      .update({
+        status: 'ready',
+        published_at: now,
+        planned_date: workout.week_id ? plannedDate : null,
+        planned_day: workout.week_id ? plannedDay : null,
+      })
       .eq('id', workout.id);
+
     if (error) {
       setBanner(error.message);
       return;
@@ -437,15 +474,29 @@ export default function WorkoutEditPage() {
   const weekStartIso = week?.week_start || null;
   const weekEndIso = weekStartIso ? (week?.week_end || addDaysIso(weekStartIso, 6)) : null;
 
-  const weekLabel = week
-    ? week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(weekEndIso)}`
-    : '—';
+  const weekLabel = week ? week.label || `Semana ${formatBR(week.week_start)} – ${formatBR(weekEndIso)}` : '—';
+
   const totalPreview = (() => {
     const warm = includeWarmup ? parseKm(warmupKm) : 0;
     const cool = includeCooldown ? parseKm(cooldownKm) : 0;
     const blocksKm = sumBlocksKm(blocks);
     return warm + cool + blocksKm;
   })();
+
+  const needsRepublish = workout ? workoutNeedsRepublish(workout as any) : false;
+
+  const publishLabel =
+    workout?.status === 'draft'
+      ? 'Publicar'
+      : workout?.status === 'ready'
+        ? needsRepublish
+          ? 'Republicar'
+          : 'Publicado'
+        : workout?.status === 'canceled'
+          ? 'Cancelado'
+          : 'Encerrado';
+
+  const publishDisabled = locked || !workout || (workout.status !== 'draft' && !(workout.status === 'ready' && needsRepublish));
 
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
@@ -470,7 +521,6 @@ export default function WorkoutEditPage() {
               </button>
             </div>
           </div>
-
 
           <div className="mt-4">
             <div className="text-sm text-slate-600 dark:text-slate-300">Título</div>
@@ -502,27 +552,33 @@ export default function WorkoutEditPage() {
                 Deve estar entre <b>{formatBR(weekStartIso)}</b> e <b>{formatBR(weekEndIso)}</b>.
               </div>
             ) : null}
-            {plannedDateError ? (
-              <div className="mt-2 text-xs text-amber-800 dark:text-amber-200">{plannedDateError}</div>
-            ) : null}
+            {plannedDateError ? <div className="mt-2 text-xs text-amber-800 dark:text-amber-200">{plannedDateError}</div> : null}
           </div>
 
           <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <button
-              className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-              onClick={save}
-              disabled={locked}
-            >
+            <button className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50" onClick={save} disabled={locked}>
               Salvar
             </button>
 
             <button
               className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold disabled:opacity-50"
               onClick={publish}
-              disabled={workout?.status === 'ready'}
-              title={workout?.status === 'ready' ? 'Já está publicado' : 'Publicar para o aluno'}
+              disabled={publishDisabled}
+              title={
+                locked
+                  ? 'Edição bloqueada'
+                  : workout?.status === 'draft'
+                    ? 'Publicar para o aluno'
+                    : workout?.status === 'ready'
+                      ? needsRepublish
+                        ? 'Republicar para aplicar alterações ao aluno'
+                        : 'Já está publicado'
+                      : workout?.status === 'canceled'
+                        ? 'Treino cancelado'
+                        : 'Treino encerrado'
+              }
             >
-              Publicar
+              {publishLabel}
             </button>
 
             <button className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold" onClick={openPortalPreview}>
@@ -531,9 +587,7 @@ export default function WorkoutEditPage() {
           </div>
         </div>
 
-        {banner && (
-          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
-        )}
+        {banner && <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>}
 
         {loading ? (
           <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
@@ -582,11 +636,7 @@ export default function WorkoutEditPage() {
             <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
               <div className="flex items-center justify-between gap-3">
                 <div className="font-semibold">Blocos</div>
-                <button
-                  className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-                  onClick={addBlock}
-                  disabled={locked}
-                >
+                <button className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50" onClick={addBlock} disabled={locked}>
                   + Adicionar bloco
                 </button>
               </div>
@@ -626,10 +676,7 @@ export default function WorkoutEditPage() {
                             value={b.intensity}
                             onChange={(e) => {
                               const v = e.target.value as BlockDraft['intensity'];
-                              updateBlock(b.id, {
-                                intensity: v,
-                                paceStr: b.paceStr || suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, v),
-                              });
+                              updateBlock(b.id, { intensity: v, paceStr: b.paceStr || suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, v) });
                             }}
                             disabled={locked}
                           >
