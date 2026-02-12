@@ -215,12 +215,17 @@ export default function StudentPage() {
     setWeeks((res2.data || []) as any);
   }
 
-  async function loadWorkoutsForWeek(weekId: string) {
+  // ✅ FIX: aceita null e não quebra o build (selectedWeekId é string | null)
+  async function loadWorkoutsForWeek(weekId: string | null) {
+    // Se não houver semana selecionada, não há o que carregar
+    if (!weekId) return;
     setBanner(null);
 
     const { data, error } = await supabase
       .from('workouts')
-      .select('id,student_id,trainer_id,week_id,status,template_type,title,total_km,planned_date,planned_day,locked_at,created_at,updated_at,published_at')
+      .select(
+        'id,student_id,trainer_id,week_id,status,template_type,title,total_km,planned_date,planned_day,locked_at,created_at,updated_at,published_at'
+      )
       .eq('student_id', studentId)
       .eq('week_id', weekId)
       .order('planned_day', { ascending: true, nullsFirst: false })
@@ -335,7 +340,9 @@ export default function StudentPage() {
       setBanner('Portal do aluno não está habilitado.');
       return;
     }
-    const url = `${window.location.origin}/p/${student.public_slug}/workouts/${workoutId}?t=${encodeURIComponent(student.portal_token)}&preview=1`;
+    const url = `${window.location.origin}/p/${student.public_slug}/workouts/${workoutId}?t=${encodeURIComponent(
+      student.portal_token
+    )}&preview=1`;
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
@@ -364,7 +371,8 @@ export default function StudentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weeks]);
 
-  const weekRange = selectedWeekStart && selectedWeekEnd ? formatWeekRange(selectedWeekStart, selectedWeekEnd) : '—';
+  const weekRange =
+    selectedWeekStart && selectedWeekEnd ? formatWeekRange(selectedWeekStart, selectedWeekEnd) : '—';
 
   const readyCount = workouts.filter((w) => w.status === 'ready').length;
   const draftCount = workouts.filter((w) => w.status === 'draft').length;
@@ -434,7 +442,9 @@ export default function StudentPage() {
         </div>
 
         {banner && (
-          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
+          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">
+            {banner}
+          </div>
         )}
 
         {loading ? (
@@ -445,7 +455,9 @@ export default function StudentPage() {
               <h2 className="font-semibold mb-3">Treinos da semana</h2>
 
               {workouts.length === 0 ? (
-                <div className="text-sm text-slate-600 dark:text-slate-300">Nenhum treino programado para esta semana ainda.</div>
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  Nenhum treino programado para esta semana ainda.
+                </div>
               ) : (
                 <div className="space-y-3">
                   {workouts.map((w) => {
@@ -474,14 +486,23 @@ export default function StudentPage() {
                             ? 'Cancelado'
                             : 'Encerrado';
 
-                    const publishDisabled = locked || (w.status !== 'draft' && !(w.status === 'ready' && needsRepublish));
+                    const publishDisabled =
+                      locked || (w.status !== 'draft' && !(w.status === 'ready' && needsRepublish));
 
                     return (
                       <div key={w.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="text-sm text-slate-600 dark:text-slate-300">
-                              {plannedLabel} · {w.status === 'draft' ? 'Rascunho' : w.status === 'ready' ? 'Publicado' : w.status === 'canceled' ? 'Cancelado' : 'Encerrado'} · {tpl} · {kmLabel(w.total_km)} km
+                              {plannedLabel} ·{' '}
+                              {w.status === 'draft'
+                                ? 'Rascunho'
+                                : w.status === 'ready'
+                                  ? 'Publicado'
+                                  : w.status === 'canceled'
+                                    ? 'Cancelado'
+                                    : 'Encerrado'}{' '}
+                              · {tpl} · {kmLabel(w.total_km)} km
                             </div>
                             <div className="font-medium truncate">{w.title || tpl || 'Treino'}</div>
 
@@ -522,7 +543,10 @@ export default function StudentPage() {
                               {publishLabel}
                             </button>
 
-                            <button className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold" onClick={() => openWorkoutInPortalPreview(w.id)}>
+                            <button
+                              className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold"
+                              onClick={() => openWorkoutInPortalPreview(w.id)}
+                            >
                               Ver no portal (QA)
                             </button>
                           </div>
