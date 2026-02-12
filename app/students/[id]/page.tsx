@@ -18,7 +18,8 @@ type WeekRow = {
   week_start: string;
   week_end: string | null;
   label: string | null;
-  status: 'draft' | 'ready' | 'archived';
+  // algumas bases antigas não possuem status nas semanas
+  status?: string | null;
 };
 
 type WorkoutRow = {
@@ -190,42 +191,73 @@ export default function StudentPage() {
   }
 
   async function loadWeeks() {
-    // weeks tabela antiga ou training_weeks
-    const res1 = await supabase
-      .from('weeks')
-      .select('id,week_start,week_end,label,status')
-      .eq('student_id', studentId)
-      .order('week_start', { ascending: true });
+    // Algumas bases têm a tabela `weeks`, outras `training_weeks`.
+    // E algumas versões NÃO possuem a coluna `status` (que estava causando 400).
+    // Então selecionamos somente colunas “comuns”.
 
-    if (!res1.error) {
-      setWeeks((res1.data || []) as any);
-      return;
+    async function fetchWeeksFrom(table: 'weeks' | 'training_weeks') {
+      const res = await supabase
+        .from(table)
+        .select('id,week_start,week_end,label')
+        .eq('student_id', studentId)
+        .order('week_start', { ascending: true });
+
+      if (!res.error) return (res.data || []) as any[];
+
+      const msg = String(res.error.message || '');
+
+      // fallback se alguma coluna não existir (ex.: week_end/label em schemas antigos)
+      if (msg.includes('does not exist') && (msg.includes('week_end') || msg.includes('label') || msg.includes('status'))) {
+        const minimal = await supabase
+          .from(table)
+          .select('id,week_start')
+          .eq('student_id', studentId)
+          .order('week_start', { ascending: true });
+
+        if (!minimal.error) return (minimal.data || []) as any[];
+      }
+
+      throw res.error;
     }
 
-    const res2 = await supabase
-      .from('training_weeks')
-      .select('id,week_start,week_end,label,status')
-      .eq('student_id', studentId)
-      .order('week_start', { ascending: true });
-
-    if (res2.error) {
-      setBanner(res2.error.message);
+    try {
+      const data = await fetchWeeksFrom('weeks');
+      const normalized: WeekRow[] = (data || []).map((w: any) => ({
+        id: w.id,
+        week_start: w.week_start,
+        week_end: w.week_end ?? null,
+        label: w.label ?? null,
+        status: w.status ?? null,
+      }));
+      setWeeks(normalized);
       return;
+    } catch {
+      // tenta tabela alternativa
     }
-    setWeeks((res2.data || []) as any);
+
+    try {
+      const data = await fetchWeeksFrom('training_weeks');
+      const normalized: WeekRow[] = (data || []).map((w: any) => ({
+        id: w.id,
+        week_start: w.week_start,
+        week_end: w.week_end ?? null,
+        label: w.label ?? null,
+        status: w.status ?? null,
+      }));
+      setWeeks(normalized);
+      return;
+    } catch (e: any) {
+      setBanner(e?.message || 'Erro ao carregar semanas.');
+    }
   }
 
-  // ✅ FIX: aceita null e não quebra o build (selectedWeekId é string | null)
   async function loadWorkoutsForWeek(weekId: string | null) {
-    // Se não houver semana selecionada, não há o que carregar
     if (!weekId) return;
     setBanner(null);
 
     const { data, error } = await supabase
       .from('workouts')
-      .select(
-        'id,student_id,trainer_id,week_id,status,template_type,title,total_km,planned_date,planned_day,locked_at,created_at,updated_at,published_at'
-      )
+      .select('id,student_id,trainer_id,week_id,status,template_type,title,total_km,planned_date,planned_day,locked_at,created_at,updated_at,published_at')
       .eq('student_id', studentId)
       .eq('week_id', weekId)
       .order('planned_day', { ascending: true, nullsFirst: false })
@@ -340,9 +372,7 @@ export default function StudentPage() {
       setBanner('Portal do aluno não está habilitado.');
       return;
     }
-    const url = `${window.location.origin}/p/${student.public_slug}/workouts/${workoutId}?t=${encodeURIComponent(
-      student.portal_token
-    )}&preview=1`;
+    const url = `${window.location.origin}/p/${student.public_slug}/workouts/${workoutId}?t=${encodeURIComponent(student.portal_token)}&preview=1`;
     window.open(url, '_blank', 'noopener,noreferrer');
   }
 
@@ -371,8 +401,7 @@ export default function StudentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weeks]);
 
-  const weekRange =
-    selectedWeekStart && selectedWeekEnd ? formatWeekRange(selectedWeekStart, selectedWeekEnd) : '—';
+  const weekRange = selectedWeekStart && selectedWeekEnd ? formatWeekRange(selectedWeekStart, selectedWeekEnd) : '—';
 
   const readyCount = workouts.filter((w) => w.status === 'ready').length;
   const draftCount = workouts.filter((w) => w.status === 'draft').length;
@@ -442,9 +471,7 @@ export default function StudentPage() {
         </div>
 
         {banner && (
-          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">
-            {banner}
-          </div>
+          <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
         )}
 
         {loading ? (
@@ -455,9 +482,7 @@ export default function StudentPage() {
               <h2 className="font-semibold mb-3">Treinos da semana</h2>
 
               {workouts.length === 0 ? (
-                <div className="text-sm text-slate-600 dark:text-slate-300">
-                  Nenhum treino programado para esta semana ainda.
-                </div>
+                <div className="text-sm text-slate-600 dark:text-slate-300">Nenhum treino programado para esta semana ainda.</div>
               ) : (
                 <div className="space-y-3">
                   {workouts.map((w) => {
@@ -486,8 +511,7 @@ export default function StudentPage() {
                             ? 'Cancelado'
                             : 'Encerrado';
 
-                    const publishDisabled =
-                      locked || (w.status !== 'draft' && !(w.status === 'ready' && needsRepublish));
+                    const publishDisabled = locked || (w.status !== 'draft' && !(w.status === 'ready' && needsRepublish));
 
                     return (
                       <div key={w.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
@@ -495,14 +519,8 @@ export default function StudentPage() {
                           <div className="min-w-0">
                             <div className="text-sm text-slate-600 dark:text-slate-300">
                               {plannedLabel} ·{' '}
-                              {w.status === 'draft'
-                                ? 'Rascunho'
-                                : w.status === 'ready'
-                                  ? 'Publicado'
-                                  : w.status === 'canceled'
-                                    ? 'Cancelado'
-                                    : 'Encerrado'}{' '}
-                              · {tpl} · {kmLabel(w.total_km)} km
+                              {w.status === 'draft' ? 'Rascunho' : w.status === 'ready' ? 'Publicado' : w.status === 'canceled' ? 'Cancelado' : 'Encerrado'} ·{' '}
+                              {tpl} · {kmLabel(w.total_km)} km
                             </div>
                             <div className="font-medium truncate">{w.title || tpl || 'Treino'}</div>
 
