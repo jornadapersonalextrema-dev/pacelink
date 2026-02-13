@@ -374,6 +374,7 @@ export default function StudentDetailPage() {
   const readyCount = workouts.filter((w) => w.status === 'ready').length;
   const draftCount = workouts.filter((w) => w.status === 'draft').length;
   const completedCount = workouts.filter((w) => latestExecByWorkout[w.id]?.status === 'completed').length;
+  const canceledCount = workouts.filter((w) => w.status === 'canceled').length;
 
   return (
     <main className="min-h-screen bg-slate-50 dark:bg-slate-950 p-4">
@@ -494,6 +495,7 @@ export default function StudentDetailPage() {
                 </div>
                 <div className="px-3 py-2 rounded-full bg-slate-100 dark:bg-slate-800 text-sm font-semibold">Publicados: {readyCount}</div>
                 <div className="px-3 py-2 rounded-full bg-slate-100 dark:bg-slate-800 text-sm font-semibold">Concluídos: {completedCount}</div>
+                <div className="px-3 py-2 rounded-full bg-slate-100 dark:bg-slate-800 text-sm font-semibold">Cancelados: {canceledCount}</div>
               </div>
             </div>
 
@@ -509,58 +511,61 @@ export default function StudentDetailPage() {
                     const hasExecution = !!ex;
 
                     const templateLabel = w.template_type ? TEMPLATE_LABEL[w.template_type] || w.template_type : '—';
-                    const statusLabel = STATUS_LABEL[w.status] || w.status;
+                    const baseStatusLabel = STATUS_LABEL[w.status] || w.status;
+
+                    const doneDate = ex?.performed_at ? formatBRShort(ex.performed_at) : ex?.completed_at ? formatBRShort(ex.completed_at) : null;
+
+                    const statusLabel = w.status === 'canceled'
+                      ? 'Cancelado'
+                      : ex?.status === 'completed'
+                        ? doneDate
+                          ? `Concluído (${doneDate})`
+                          : 'Concluído'
+                        : ex
+                          ? 'Em andamento'
+                          : baseStatusLabel;
 
                     const whenLabel = plannedLabel(w, selectedWeek?.week_start);
 
                     // regras solicitadas:
-                    const canEdit = !hasExecution; // só edita se NÃO tem execução
+                    const canEdit = !hasExecution && w.status !== 'canceled'; // só edita se NÃO tem execução e NÃO está cancelado
                     const canPublish = w.status === 'draft' && !hasExecution; // se já está publicado, não mostra Publicar
 
                     return (
                       <div key={w.id} className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm text-slate-600 dark:text-slate-300">
-                              {whenLabel} · {statusLabel} · {templateLabel} · {formatKm(w.total_km)}
-                            </div>
-                            <div className="text-lg font-semibold truncate">{w.title || 'Treino'}</div>
-                            <div className="text-sm text-slate-600 dark:text-slate-300 mt-1">
-                              Execução do aluno:{' '}
-                              {ex?.status === 'completed'
-                                ? `Concluído (${ex.performed_at ? formatBRShort(ex.performed_at) : '—'})`
-                                : hasExecution
-                                  ? 'Em andamento'
-                                  : '—'}
-                            </div>
-                          </div>
+                        <div className="space-y-1">
+                          <div className="text-sm text-slate-600 dark:text-slate-300">{whenLabel}</div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">{statusLabel}</div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">{templateLabel}</div>
+                          <div className="text-sm text-slate-600 dark:text-slate-300">Total: {formatKm(w.total_km)}</div>
+                          <div className="text-lg font-semibold whitespace-normal break-words">{w.title || 'Treino'}</div>
+                        </div>
 
-                          <div className="shrink-0 flex flex-col gap-2 items-end">
-                            {canEdit ? (
-                              <button
-                                className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold"
-                                onClick={() => router.push(`/workouts/${w.id}/edit`)}
-                              >
-                                Editar
-                              </button>
-                            ) : null}
-
-                            {canPublish ? (
-                              <button
-                                className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
-                                onClick={() => publishWorkout(w.id)}
-                              >
-                                Publicar
-                              </button>
-                            ) : null}
-
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {canEdit ? (
                             <button
-                              className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold"
-                              onClick={() => openWorkoutPreview(w.id)}
+                              className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold"
+                              onClick={() => router.push(`/workouts/${w.id}/edit`)}
                             >
-                              Ver no portal (QA)
+                              Editar
                             </button>
-                          </div>
+                          ) : null}
+
+                          {canPublish ? (
+                            <button
+                              className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
+                              onClick={() => publishWorkout(w.id)}
+                            >
+                              Publicar
+                            </button>
+                          ) : null}
+
+                          <button
+                            className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold"
+                            onClick={() => openWorkoutPreview(w.id)}
+                          >
+                            Ver no portal (QA)
+                          </button>
                         </div>
                       </div>
                     );

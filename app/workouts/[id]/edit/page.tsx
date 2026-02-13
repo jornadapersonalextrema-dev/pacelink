@@ -231,7 +231,7 @@ export default function WorkoutEditPage() {
     // lock check (any execution)
     const { count } = await supabase.from('executions').select('*', { count: 'exact', head: true }).eq('workout_id', workoutId);
 
-    const isLocked = !!(w as any).locked_at || (count || 0) > 0;
+    const isLocked = !!(w as any).locked_at || (count || 0) > 0 || String((w as any).status) === 'canceled';
     setLocked(isLocked);
 
     // populate form
