@@ -79,110 +79,93 @@ function diffDays(fromIso: string, toIso: string) {
 function formatBR(iso: string | null) {
   if (!iso) return '—';
   const [y, m, d] = String(iso).split('-');
-  if (!y || !m || !d) return String(iso);
+  if (!y || !m || !d) return '—';
   return `${d}/${m}/${y}`;
 }
 
-function toMs(ts: string | null | undefined) {
-  if (!ts) return null;
-  const ms = Date.parse(ts);
-  return Number.isFinite(ms) ? ms : null;
+function kmLabel(n: number) {
+  if (!Number.isFinite(n)) return '0';
+  // 1 casa decimal se tiver decimal, senão inteiro
+  const s = String(n);
+  if (s.includes('.')) return s.replace('.', ',');
+  return s;
 }
 
-function workoutNeedsRepublish(w: { status: string; updated_at?: string | null; published_at?: string | null }) {
-  if (w.status !== 'ready') return false;
-  const pub = toMs(w.published_at ?? null);
-  const upd = toMs(w.updated_at ?? null);
-
-  // se published_at ainda não existe/foi preenchido (dados antigos), permite "Republicar" para corrigir
-  if (pub == null && upd != null) return true;
-  if (pub == null || upd == null) return false;
-
-  return upd > pub;
-}
-
-function kmLabel(km: number | null) {
-  if (km == null) return '';
-  return Number(km).toFixed(1).replace('.', ',');
-}
-
-function parseKm(v: string) {
-  const n = Number(String(v || '').replace(',', '.'));
-  return Number.isFinite(n) ? n : 0;
+function parseKm(s: string) {
+  const v = Number(String(s).replace(',', '.'));
+  return Number.isFinite(v) ? v : 0;
 }
 
 function sumBlocksKm(blocks: BlockDraft[]) {
-  return blocks.reduce((acc, b) => acc + (b.distanceKm.trim() ? parseKm(b.distanceKm) : 0), 0);
+  return blocks.reduce((acc, b) => acc + parseKm(b.distanceKm), 0);
 }
 
-function formatPace(secPerKm: number | null) {
-  if (!secPerKm || !Number.isFinite(secPerKm)) return '';
-  const total = Math.max(0, Math.floor(secPerKm));
-  const mm = Math.floor(total / 60);
-  const ss = total % 60;
-  return `${mm}:${ss.toString().padStart(2, '0')}/km`;
-}
+function workoutNeedsRepublish(w: WorkoutRow) {
+  // se published_at ainda não existe/foi preenchido (dados antigos), permite "Republicar" para corrigir
+  const pub = (w as any).published_at || null;
+  const upd = (w as any).updated_at || null;
+  if (pub == null && upd != null) return true;
 
-function suggestedPaceByIntensity(p1k: number | null, intensity: BlockDraft['intensity']) {
-  if (!p1k || !Number.isFinite(p1k)) return '';
-  const base = p1k;
-
-  // heurística simples (ajuste depois se quiser):
-  // easy: +20% mais lento; moderate: +10%; hard: -5%
-  const factor = intensity === 'easy' ? 1.2 : intensity === 'moderate' ? 1.1 : 0.95;
-  return formatPace(base * factor);
-}
-
-function slugify(s: string) {
-  return (s || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)+/g, '');
-}
-
-function makeStudentSlug(name: string, id: string) {
-  const base = slugify(name) || 'aluno';
-  const suffix = (id || '').replace(/-/g, '').slice(0, 6) || '000000';
-  return `${base}-${suffix}`;
+  // se updated_at > published_at, precisa republicar para aplicar alterações no portal
+  if (!pub || !upd) return false;
+  const a = new Date(pub).getTime();
+  const b = new Date(upd).getTime();
+  return b > a + 1000; // margem
 }
 
 function randomToken() {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    // @ts-ignore
-    return crypto.randomUUID().replace(/-/g, '');
-  }
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  // token simples (base64url-ish)
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return btoa(String.fromCharCode(...Array.from(bytes)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function normalizeSlug(s: string) {
+  return String(s)
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function makeStudentSlug(name: string, id: string) {
+  const base = normalizeSlug(name) || 'aluno';
+  const suffix = String(id).slice(0, 6);
+  return `${base}-${suffix}`;
 }
 
 export default function WorkoutEditPage() {
   const router = useRouter();
-  const params = useParams<{ id: string }>();
-  const workoutId = params.id;
+  const params = useParams() as any;
+
+  const workoutId = (params?.id as string) || '';
 
   const supabase = useMemo(() => createClient(), []);
 
   const [loading, setLoading] = useState(true);
   const [banner, setBanner] = useState<string | null>(null);
 
-  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
   const [student, setStudent] = useState<StudentRow | null>(null);
   const [week, setWeek] = useState<WeekRow | null>(null);
-
+  const [workout, setWorkout] = useState<WorkoutRow | null>(null);
   const [locked, setLocked] = useState(false);
 
+  // form
   const [title, setTitle] = useState('');
-  const [includeWarmup, setIncludeWarmup] = useState(false);
-  const [warmupKm, setWarmupKm] = useState('');
-  const [includeCooldown, setIncludeCooldown] = useState(false);
-  const [cooldownKm, setCooldownKm] = useState('');
-
-  const [plannedDate, setPlannedDate] = useState('');
+  const [includeWarmup, setIncludeWarmup] = useState(true);
+  const [warmupKm, setWarmupKm] = useState('1');
+  const [includeCooldown, setIncludeCooldown] = useState(true);
+  const [cooldownKm, setCooldownKm] = useState('1');
+  const [plannedDate, setPlannedDate] = useState(''); // YYYY-MM-DD
   const [plannedDateError, setPlannedDateError] = useState<string | null>(null);
 
-  const [blocks, setBlocks] = useState<BlockDraft[]>([{ id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' }]);
+  const [blocks, setBlocks] =
+    useState<BlockDraft[]>([{ id: 'b1', distanceKm: '', intensity: 'easy', paceStr: '', note: '' }]);
 
   async function loadAll() {
     setLoading(true);
@@ -368,6 +351,10 @@ export default function WorkoutEditPage() {
   async function publish() {
     if (!workout) return;
     setBanner(null);
+    if (locked) {
+      setBanner('Este treino já teve execução iniciada e não pode mais ser alterado.');
+      return;
+    }
 
     const now = new Date().toISOString();
 
@@ -444,26 +431,18 @@ export default function WorkoutEditPage() {
 
     if (Object.keys(patch).length === 0) return student;
 
-    const { data, error } = await supabase
-      .from('students')
-      .update(patch)
-      .eq('id', student.id)
-      .select('id,name,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
-      .maybeSingle();
-
-    if (error) {
-      setBanner(error.message);
-      return null;
-    }
+    const { data, error } = await supabase.from('students').update(patch).eq('id', student.id).select('id,name,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km').maybeSingle();
+    if (error) return null;
 
     setStudent(data as any);
-    return data as any as StudentRow;
+    return data as any;
   }
 
   async function openPortalPreview() {
-    setBanner(null);
+    if (!student) return;
+
     const st = await ensurePortalAccess();
-    if (!st?.public_slug || !st.portal_token) {
+    if (!st || !st.public_slug || !st.portal_token) {
       setBanner('Não foi possível habilitar o portal do aluno.');
       return;
     }
@@ -601,119 +580,109 @@ export default function WorkoutEditPage() {
                 Incluir aquecimento
               </label>
 
-              {includeWarmup ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <div className="text-sm text-slate-600 dark:text-slate-300">Aquecimento (km)</div>
                   <input
                     className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
                     value={warmupKm}
                     onChange={(e) => setWarmupKm(e.target.value)}
+                    disabled={locked || !includeWarmup}
                     inputMode="decimal"
-                    disabled={locked}
+                    placeholder="1,0"
                   />
                 </div>
-              ) : null}
 
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} disabled={locked} />
-                Incluir desaquecimento
-              </label>
-
-              {includeCooldown ? (
                 <div>
                   <div className="text-sm text-slate-600 dark:text-slate-300">Desaquecimento (km)</div>
                   <input
                     className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
                     value={cooldownKm}
                     onChange={(e) => setCooldownKm(e.target.value)}
+                    disabled={locked || !includeCooldown}
                     inputMode="decimal"
-                    disabled={locked}
+                    placeholder="1,0"
                   />
                 </div>
-              ) : null}
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} disabled={locked} />
+                Incluir desaquecimento
+              </label>
             </div>
 
-            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4">
+            <div className="rounded-2xl bg-white dark:bg-surface-dark shadow p-4 space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="font-semibold">Blocos</div>
-                <button className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50" onClick={addBlock} disabled={locked}>
+                <button className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold" onClick={addBlock} disabled={locked}>
                   + Adicionar bloco
                 </button>
               </div>
 
-              <div className="mt-3 space-y-3">
-                {blocks.map((b, idx) => {
-                  const autoPace = suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, b.intensity);
-                  return (
-                    <div key={b.id} className="rounded-xl border border-slate-200 dark:border-slate-700 p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-semibold">Bloco {idx + 1}</div>
-                        <button
-                          className="text-sm underline text-slate-600 dark:text-slate-300 disabled:opacity-50"
-                          onClick={() => removeBlock(b.id)}
-                          disabled={locked || blocks.length <= 1}
-                        >
+              <div className="space-y-3">
+                {blocks.map((b, idx) => (
+                  <div key={b.id} className="rounded-2xl border border-slate-200 dark:border-slate-700 p-3">
+                    <div className="flex items-center justify-between">
+                      <div className="font-semibold">Bloco {idx + 1}</div>
+                      {blocks.length > 1 ? (
+                        <button className="text-sm underline text-slate-600 dark:text-slate-300" onClick={() => removeBlock(b.id)} disabled={locked}>
                           Remover
                         </button>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-sm text-slate-600 dark:text-slate-300">Distância (km)</div>
+                        <input
+                          className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                          value={b.distanceKm}
+                          onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
+                          inputMode="decimal"
+                          placeholder="Ex: 2,0"
+                          disabled={locked}
+                        />
                       </div>
 
-                      <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-sm text-slate-600 dark:text-slate-300">Distância (km)</div>
-                          <input
-                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
-                            value={b.distanceKm}
-                            onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
-                            inputMode="decimal"
-                            disabled={locked}
-                          />
-                        </div>
+                      <div>
+                        <div className="text-sm text-slate-600 dark:text-slate-300">Intensidade</div>
+                        <select
+                          className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                          value={b.intensity}
+                          onChange={(e) => updateBlock(b.id, { intensity: e.target.value as any })}
+                          disabled={locked}
+                        >
+                          <option value="easy">Leve</option>
+                          <option value="moderate">Moderado</option>
+                          <option value="hard">Forte</option>
+                        </select>
+                      </div>
 
-                        <div>
-                          <div className="text-sm text-slate-600 dark:text-slate-300">Intensidade</div>
-                          <select
-                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
-                            value={b.intensity}
-                            onChange={(e) => {
-                              const v = e.target.value as BlockDraft['intensity'];
-                              updateBlock(b.id, { intensity: v, paceStr: b.paceStr || suggestedPaceByIntensity(student?.p1k_sec_per_km ?? null, v) });
-                            }}
-                            disabled={locked}
-                          >
-                            <option value="easy">Leve</option>
-                            <option value="moderate">Moderado</option>
-                            <option value="hard">Forte</option>
-                          </select>
-                        </div>
+                      <div>
+                        <div className="text-sm text-slate-600 dark:text-slate-300">Ritmo sugerido (opcional)</div>
+                        <input
+                          className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                          value={b.paceStr}
+                          onChange={(e) => updateBlock(b.id, { paceStr: e.target.value })}
+                          placeholder="Ex: 5:30/km"
+                          disabled={locked}
+                        />
+                      </div>
 
-                        <div>
-                          <div className="text-sm text-slate-600 dark:text-slate-300">Ritmo sugerido (opcional)</div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                            Sugestão automática: <b>{autoPace || '—'}</b>
-                          </div>
-                          <input
-                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
-                            value={b.paceStr}
-                            onChange={(e) => updateBlock(b.id, { paceStr: e.target.value })}
-                            placeholder={autoPace || 'Ex: 6:00–6:30/km'}
-                            disabled={locked}
-                          />
-                        </div>
-
-                        <div>
-                          <div className="text-sm text-slate-600 dark:text-slate-300">Obs (opcional)</div>
-                          <input
-                            className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
-                            value={b.note}
-                            onChange={(e) => updateBlock(b.id, { note: e.target.value })}
-                            placeholder="Ex: manter respiração controlada"
-                            disabled={locked}
-                          />
-                        </div>
+                      <div>
+                        <div className="text-sm text-slate-600 dark:text-slate-300">Obs (opcional)</div>
+                        <input
+                          className="mt-2 w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3"
+                          value={b.note}
+                          onChange={(e) => updateBlock(b.id, { note: e.target.value })}
+                          placeholder="Ex: manter respiração"
+                          disabled={locked}
+                        />
                       </div>
                     </div>
-                  );
-                })}
+                  </div>
+                ))}
               </div>
             </div>
           </>
