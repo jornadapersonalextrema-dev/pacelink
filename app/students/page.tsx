@@ -46,6 +46,8 @@ export default function StudentsPage() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const [signingOut, setSigningOut] = useState(false);
+
   // modal novo aluno
   const [openNew, setOpenNew] = useState(false);
   const [name, setName] = useState('');
@@ -142,12 +144,46 @@ export default function StudentsPage() {
     }
   };
 
+  const handleSignOut = async () => {
+    if (signingOut) return;
+
+    const ok = window.confirm('Sair do sistema?');
+    if (!ok) return;
+
+    setSigningOut(true);
+    setError(null);
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      router.replace('/login');
+      router.refresh();
+    } catch (e: any) {
+      setError(e?.message || 'Erro ao sair do sistema.');
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   return (
     <div className="flex-1 flex flex-col bg-background-light dark:bg-background-dark">
       <Topbar title="Alunos" />
 
       <main className="flex-1 overflow-y-auto no-scrollbar pb-28">
         <div className="px-5 pt-6">
+          {trainerId ? (
+            <div className="flex items-center justify-end mb-3">
+              <button
+                className="text-sm underline text-slate-500 dark:text-slate-300 disabled:opacity-50"
+                onClick={handleSignOut}
+                disabled={signingOut}
+              >
+                {signingOut ? 'Saindo...' : 'Sair'}
+              </button>
+            </div>
+          ) : null}
+
           {error && (
             <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-600 dark:text-red-300 mb-4">
               {error}
@@ -241,6 +277,7 @@ export default function StudentsPage() {
               <Button onClick={handleCreateStudent} disabled={saving}>
                 {saving ? 'Salvando...' : 'Salvar'}
               </Button>
+
               <button
                 className="w-full text-center text-slate-400 font-bold py-2"
                 onClick={() => setOpenNew(false)}
