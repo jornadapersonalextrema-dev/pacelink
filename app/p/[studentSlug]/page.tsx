@@ -195,7 +195,6 @@ export default function StudentPortalHomePage() {
   // Estado/refs de drag do sheet
   const [sheetTranslateY, setSheetTranslateY] = useState(0);
   const [sheetDragging, setSheetDragging] = useState(false);
-  const [sheetClosing, setSheetClosing] = useState(false);
 
   const dragRef = useRef<{
     active: boolean;
@@ -213,9 +212,20 @@ export default function StudentPortalHomePage() {
     lastTime: 0,
   });
 
+  function vibrateClose() {
+    try {
+      if (typeof navigator !== 'undefined' && typeof (navigator as any).vibrate === 'function') {
+        (navigator as any).vibrate(10);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
   function closeSheetAnimated() {
     if (!sheetDay) return;
-    setSheetClosing(true);
+
+    vibrateClose();
     setSheetDragging(false);
 
     const h =
@@ -228,7 +238,6 @@ export default function StudentPortalHomePage() {
     window.setTimeout(() => {
       setSheetDay(null);
       setSheetTranslateY(0);
-      setSheetClosing(false);
       dragRef.current.active = false;
       dragRef.current.pointerId = -1;
     }, 220);
@@ -240,11 +249,10 @@ export default function StudentPortalHomePage() {
   }, [week?.id]);
 
   useEffect(() => {
-    // ao abrir sheet, reset animação/posição
+    // ao abrir sheet, reset posição
     if (sheetDay) {
       setSheetTranslateY(0);
       setSheetDragging(false);
-      setSheetClosing(false);
       dragRef.current.active = false;
       dragRef.current.pointerId = -1;
     }
@@ -258,6 +266,22 @@ export default function StudentPortalHomePage() {
     return () => {
       document.body.style.overflow = prev;
     };
+  }, [sheetDay]);
+
+  // ✅ Fechar com ESC (desktop)
+  useEffect(() => {
+    if (!sheetDay) return;
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeSheetAnimated();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sheetDay]);
 
   function onSheetGrabPointerDown(e: React.PointerEvent) {
@@ -305,8 +329,6 @@ export default function StudentPortalHomePage() {
     dragRef.current.pointerId = -1;
 
     // thresholds:
-    // - dy grande fecha
-    // - ou "flick" (velocidade) fecha mesmo com dy médio
     const shouldClose = dy > 160 || (dy > 70 && v > 0.9);
 
     if (shouldClose) {
@@ -527,9 +549,7 @@ export default function StudentPortalHomePage() {
                         onClick={() => {
                           const id = String(w.id || '');
                           if (!id) return;
-                          // fecha animado e navega
                           closeSheetAnimated();
-                          // garante que navegue depois do sheet começar a fechar (evita flicker)
                           window.setTimeout(() => goToWorkout(id), 120);
                         }}
                       >
@@ -542,7 +562,6 @@ export default function StudentPortalHomePage() {
                   })}
                 </div>
 
-                {/* safe area */}
                 <div className="pb-2" />
               </div>
             </div>
