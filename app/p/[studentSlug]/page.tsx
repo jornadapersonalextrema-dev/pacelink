@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
 type SummaryResponse = {
@@ -176,9 +176,7 @@ export default function StudentPortalHomePage() {
     for (const d of days) {
       d.planned_km = Math.round(d.planned_km * 10) / 10;
       d.actual_km = Math.round(d.actual_km * 10) / 10;
-
-      // (opcional) ordenar treinos dentro do dia, se existir "planned_order" ou algo semelhante.
-      // Mantém estável sem quebrar nada:
+      // Se existir um campo de ordem, pode ordenar aqui sem quebrar:
       // d.workouts.sort((a, b) => Number(a.planned_order || 0) - Number(b.planned_order || 0));
     }
 
@@ -194,13 +192,66 @@ export default function StudentPortalHomePage() {
   // Bottom-sheet para dias com 2+ treinos
   const [sheetDay, setSheetDay] = useState<DayAgg | null>(null);
 
+  // Estado/refs de drag do sheet
+  const [sheetTranslateY, setSheetTranslateY] = useState(0);
+  const [sheetDragging, setSheetDragging] = useState(false);
+  const [sheetClosing, setSheetClosing] = useState(false);
+
+  const dragRef = useRef<{
+    active: boolean;
+    pointerId: number;
+    startY: number;
+    startTime: number;
+    lastY: number;
+    lastTime: number;
+  }>({
+    active: false,
+    pointerId: -1,
+    startY: 0,
+    startTime: 0,
+    lastY: 0,
+    lastTime: 0,
+  });
+
+  function closeSheetAnimated() {
+    if (!sheetDay) return;
+    setSheetClosing(true);
+    setSheetDragging(false);
+
+    const h =
+      typeof window !== 'undefined'
+        ? Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0)
+        : 800;
+
+    setSheetTranslateY(h);
+
+    window.setTimeout(() => {
+      setSheetDay(null);
+      setSheetTranslateY(0);
+      setSheetClosing(false);
+      dragRef.current.active = false;
+      dragRef.current.pointerId = -1;
+    }, 220);
+  }
+
   useEffect(() => {
     // quando muda a semana, fecha sheet
     setSheetDay(null);
   }, [week?.id]);
 
   useEffect(() => {
-    // trava scroll do body quando sheet abre (sem dependências externas)
+    // ao abrir sheet, reset animação/posição
+    if (sheetDay) {
+      setSheetTranslateY(0);
+      setSheetDragging(false);
+      setSheetClosing(false);
+      dragRef.current.active = false;
+      dragRef.current.pointerId = -1;
+    }
+  }, [sheetDay?.day]);
+
+  useEffect(() => {
+    // trava scroll do body quando sheet abre
     if (!sheetDay) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -208,6 +259,65 @@ export default function StudentPortalHomePage() {
       document.body.style.overflow = prev;
     };
   }, [sheetDay]);
+
+  function onSheetGrabPointerDown(e: React.PointerEvent) {
+    // apenas botão esquerdo/mão ou toque
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    dragRef.current.active = true;
+    dragRef.current.pointerId = e.pointerId;
+    dragRef.current.startY = e.clientY;
+    dragRef.current.lastY = e.clientY;
+    dragRef.current.startTime = performance.now();
+    dragRef.current.lastTime = dragRef.current.startTime;
+
+    setSheetDragging(true);
+
+    try {
+      (e.currentTarget as any).setPointerCapture?.(e.pointerId);
+    } catch {
+      // ignore
+    }
+  }
+
+  function onSheetGrabPointerMove(e: React.PointerEvent) {
+    if (!dragRef.current.active) return;
+    if (dragRef.current.pointerId !== e.pointerId) return;
+
+    const dy = e.clientY - dragRef.current.startY;
+    const clamped = Math.max(0, dy);
+
+    setSheetTranslateY(clamped);
+
+    dragRef.current.lastY = e.clientY;
+    dragRef.current.lastTime = performance.now();
+  }
+
+  function onSheetGrabPointerEnd(e: React.PointerEvent) {
+    if (!dragRef.current.active) return;
+    if (dragRef.current.pointerId !== e.pointerId) return;
+
+    const dy = Math.max(0, dragRef.current.lastY - dragRef.current.startY);
+    const dt = Math.max(1, dragRef.current.lastTime - dragRef.current.startTime); // ms
+    const v = dy / dt; // px/ms
+
+    dragRef.current.active = false;
+    dragRef.current.pointerId = -1;
+
+    // thresholds:
+    // - dy grande fecha
+    // - ou "flick" (velocidade) fecha mesmo com dy médio
+    const shouldClose = dy > 160 || (dy > 70 && v > 0.9);
+
+    if (shouldClose) {
+      closeSheetAnimated();
+      return;
+    }
+
+    // voltar suavemente
+    setSheetDragging(false);
+    setSheetTranslateY(0);
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
@@ -310,7 +420,6 @@ export default function StudentPortalHomePage() {
                               return;
                             }
 
-                            // 2+ treinos: abrir bottom-sheet
                             setSheetDay(d);
                           }}
                           className={`rounded-xl border px-4 py-3 text-left transition ${
@@ -331,12 +440,6 @@ export default function StudentPortalHomePage() {
                           </div>
 
                           <div className="mt-2 text-xs text-white/70">{actionLabel}</div>
-
-                          {hasWorkout && d.workouts_count === 1 ? (
-                            <div className="mt-1 text-xs text-white/50 truncate">
-                              {(d.workouts[0]?.title || TEMPLATE_LABEL[d.workouts[0]?.template_type] || 'Treino') as string}
-                            </div>
-                          ) : null}
                         </button>
                       );
                     })}
@@ -350,38 +453,55 @@ export default function StudentPortalHomePage() {
 
       {/* Bottom-sheet (somente quando tiver 2+ treinos no mesmo dia) */}
       {sheetDay ? (
-        <div
-          className="fixed inset-0 z-50"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`Treinos de ${formatBRFull(sheetDay.day)}`}
-        >
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={`Treinos de ${formatBRFull(sheetDay.day)}`}>
           {/* backdrop */}
           <button
             className="absolute inset-0 bg-black/70"
             aria-label="Fechar"
-            onClick={() => setSheetDay(null)}
+            onClick={() => closeSheetAnimated()}
           />
 
-          {/* sheet */}
+          {/* sheet container */}
           <div className="absolute inset-x-0 bottom-0">
             <div className="mx-auto max-w-3xl px-4 pb-6">
-              <div className="rounded-2xl border border-white/10 bg-background-dark shadow-2xl overflow-hidden">
-                <div className="p-4 border-b border-white/10 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs text-white/60">Treinos de</div>
-                    <div className="font-semibold truncate">{formatBRFull(sheetDay.day)}</div>
-                  </div>
+              <div
+                className="rounded-2xl border border-white/10 bg-background-dark shadow-2xl overflow-hidden"
+                style={{
+                  transform: `translateY(${sheetTranslateY}px)`,
+                  transition: sheetDragging ? 'none' : 'transform 200ms ease-out',
+                }}
+              >
+                {/* Grabber/drag area (não interfere no scroll da lista) */}
+                <div
+                  className="pt-3 pb-2 border-b border-white/10"
+                  style={{ touchAction: 'none' }}
+                  onPointerDown={onSheetGrabPointerDown}
+                  onPointerMove={onSheetGrabPointerMove}
+                  onPointerUp={onSheetGrabPointerEnd}
+                  onPointerCancel={onSheetGrabPointerEnd}
+                >
+                  <div className="h-1.5 w-12 rounded-full bg-white/20 mx-auto" />
+                  <div className="mt-2 px-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-xs text-white/60">Treinos de</div>
+                      <div className="font-semibold truncate">{formatBRFull(sheetDay.day)}</div>
+                    </div>
 
-                  <button
-                    className="text-sm underline text-white/70"
-                    onClick={() => setSheetDay(null)}
-                  >
-                    Fechar
-                  </button>
+                    <button
+                      className="text-sm underline text-white/70"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        closeSheetAnimated();
+                      }}
+                    >
+                      Fechar
+                    </button>
+                  </div>
                 </div>
 
-                <div className="p-4 space-y-3">
+                {/* content */}
+                <div className="p-4 space-y-3 max-h-[70vh] overflow-auto">
                   {sheetDay.workouts.map((w: any) => {
                     const ex = latest[w.id];
 
@@ -407,8 +527,10 @@ export default function StudentPortalHomePage() {
                         onClick={() => {
                           const id = String(w.id || '');
                           if (!id) return;
-                          setSheetDay(null);
-                          goToWorkout(id);
+                          // fecha animado e navega
+                          closeSheetAnimated();
+                          // garante que navegue depois do sheet começar a fechar (evita flicker)
+                          window.setTimeout(() => goToWorkout(id), 120);
                         }}
                       >
                         <div className="text-xs text-white/60">
@@ -420,9 +542,8 @@ export default function StudentPortalHomePage() {
                   })}
                 </div>
 
-                <div className="px-4 pb-4">
-                  <div className="h-1.5 w-12 rounded-full bg-white/20 mx-auto" />
-                </div>
+                {/* safe area */}
+                <div className="pb-2" />
               </div>
             </div>
           </div>
