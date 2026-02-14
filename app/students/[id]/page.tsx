@@ -1,577 +1,523 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabaseBrowser';
 
 type StudentRow = {
   id: string;
   name: string | null;
-  email: string | null;
-  trainer_id: string;
-  public_slug: string | null;
-  portal_token: string | null;
-  portal_enabled: boolean | null;
-
-  // atual
+  // IMPORTANT: não existe students.pace_p1k no seu banco.
+  // Use o campo real (p1k_sec_per_km) ou deixe null.
   p1k_sec_per_km?: number | null;
-  // compat (DB antigo)
-  pace_p1k?: number | null;
 };
 
-type WorkoutRow = {
+type WeekRow = {
   id: string;
-  student_id: string;
-  week_id: string;
-  planned_date: string; // yyyy-mm-dd
+  week_start: string; // date
+  week_end: string | null; // date
+  label: string | null;
+};
+
+type WeekCounts = {
+  draft: number;
+  ready: number;
+  completed: number; // vem do summary
+  canceled: number;
+  pending: number;
+};
+
+type SummaryWorkoutRow = {
+  id: string;
   title: string | null;
-  kind: string | null;
+  template_type: string | null;
+  status: 'draft' | 'ready' | 'archived' | 'canceled' | string;
   total_km: number | null;
-  status: 'draft' | 'ready' | 'completed' | 'canceled';
+  planned_date: string | null; // date
+  planned_day: number | null;
+  execution_status: 'none' | 'completed' | 'running' | 'paused' | string | null;
+  execution_label: string | null; // ex: "Concluído (09/02)"
+  performed_at: string | null; // date
 };
 
-type ExecutionRow = {
-  workout_id: string;
-  performed_at: string | null;
-};
-
-function formatBRShort(d: string | null) {
-  if (!d) return '—';
-  const dt = new Date(d);
-  const dd = String(dt.getDate()).padStart(2, '0');
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}`;
+function formatBR(dateISO: string) {
+  // dateISO pode vir "YYYY-MM-DD"
+  const [y, m, d] = dateISO.split('-');
+  if (!y || !m || !d) return dateISO;
+  return `${d}/${m}/${y}`;
 }
 
-function formatWeekBR(startISO: string) {
-  const dt = new Date(startISO);
-  const dd = String(dt.getDate()).padStart(2, '0');
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  return `${dd}/${mm}`;
+function formatBRShort(dateISO: string) {
+  const [y, m, d] = dateISO.split('-');
+  if (!m || !d) return dateISO;
+  return `${d}/${m}`;
 }
 
-function formatPace(secPerKm: number | null) {
-  if (!secPerKm || secPerKm <= 0) return '—';
-  const m = Math.floor(secPerKm / 60);
-  const s = Math.round(secPerKm % 60);
-  return `${m}:${String(s).padStart(2, '0')}/km`;
-}
-
-function getP1kSec(st: any): number | null {
-  if (!st) return null;
-  const v = st.p1k_sec_per_km ?? st.pace_p1k ?? null;
-  return typeof v === 'number' ? v : null;
-}
-
-function weekdayShortBR(dateISO: string) {
-  const dt = new Date(dateISO);
-  // dt vindo como yyyy-mm-dd (sem TZ) -> cria como UTC-? pode variar.
-  // Para exibir dia da semana corretamente no Brasil, força meio-dia local:
-  const parts = dateISO.split('-').map((x) => Number(x));
-  const safe = new Date(parts[0], parts[1] - 1, parts[2], 12, 0, 0);
-  const wd = safe.getDay(); // 0=Dom
+function weekdayShortPT(dateISO: string) {
+  // Converte YYYY-MM-DD para Dia da semana curto PT-BR
+  const dt = new Date(dateISO + 'T00:00:00');
+  const w = dt.getDay(); // 0 dom
   const map = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
-  return map[wd] ?? '—';
+  return map[w] ?? '';
 }
 
-function classNames(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(' ');
+function templateLabelPT(tpl: string | null | undefined) {
+  const v = (tpl || '').toLowerCase();
+  if (v === 'easy_run') return 'Rodagem';
+  if (v === 'progressive') return 'Progressivo';
+  if (v === 'alternated') return 'Alternado';
+  if (v === 'run') return 'Corrida';
+  return tpl || 'Treino';
+}
+
+function statusLabelPT(workoutStatus: string, executionLabel?: string | null) {
+  // "Concluído" não é status do workout; vem da execução/summary.
+  if (executionLabel) return executionLabel;
+  if (workoutStatus === 'draft') return 'Rascunho';
+  if (workoutStatus === 'ready') return 'Publicado';
+  if (workoutStatus === 'canceled') return 'Cancelado';
+  if (workoutStatus === 'archived') return 'Arquivado';
+  return workoutStatus;
+}
+
+function paceLabelFromP1K(p1k?: number | null) {
+  if (p1k == null || Number.isNaN(Number(p1k)) || Number(p1k) <= 0) return '—';
+  const totalSec = Math.round(Number(p1k));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${mm}:${String(ss).padStart(2, '0')}/km`;
+}
+
+async function safeCopy(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export default function StudentPage() {
-  const supabase = useMemo(() => createClient(), []);
   const params = useParams<{ id: string }>();
-  const searchParams = useSearchParams();
+  const studentId = params?.id;
+  const router = useRouter();
+  const supabase = useMemo(() => createClient(), []);
 
-  const studentId = params.id;
-  const weekId = searchParams.get('week') || null;
-
+  const [loading, setLoading] = useState(true);
   const [student, setStudent] = useState<StudentRow | null>(null);
-  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
-  const [execMap, setExecMap] = useState<Record<string, ExecutionRow | null>>({});
-  const [weekStart, setWeekStart] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [banner, setBanner] = useState<string | null>(null);
 
-  const currentWeekStartISO = useMemo(() => {
-    const now = new Date();
-    // Ajusta para segunda-feira:
-    const day = now.getDay(); // 0=Dom
-    const diffToMon = (day === 0 ? -6 : 1) - day;
-    const mon = new Date(now);
-    mon.setDate(now.getDate() + diffToMon);
-    mon.setHours(0, 0, 0, 0);
-    const yyyy = mon.getFullYear();
-    const mm = String(mon.getMonth() + 1).padStart(2, '0');
-    const dd = String(mon.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }, []);
+  const [weeks, setWeeks] = useState<WeekRow[]>([]);
+  const [selectedWeekId, setSelectedWeekId] = useState<string | null>(null);
+  const [selectedWeek, setSelectedWeek] = useState<WeekRow | null>(null);
 
-  async function fetchStudentRow(id: string) {
-    const selects = [
-      'id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km',
-      'id,name,email,trainer_id,public_slug,portal_token,portal_enabled,pace_p1k',
-      'id,name,email,trainer_id,public_slug,portal_token,portal_enabled',
-    ];
+  const [counts, setCounts] = useState<WeekCounts>({
+    draft: 0,
+    ready: 0,
+    completed: 0,
+    canceled: 0,
+    pending: 0,
+  });
 
-    let lastErr: any = null;
+  const [workouts, setWorkouts] = useState<SummaryWorkoutRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-    for (const sel of selects) {
-      const { data, error } = await supabase.from('students').select(sel).eq('id', id).maybeSingle();
+  const studentSlug = useMemo(() => {
+    // slug simples a partir do nome (opcional)
+    const name = (student?.name || '').trim().toLowerCase();
+    if (!name) return '';
+    return name
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '');
+  }, [student?.name]);
 
-      if (!error) return { data: data as any, error: null };
+  const portalUrl = useMemo(() => {
+    if (!studentSlug) return '';
+    // Ajuste aqui se seu portal público for /p/[studentSlug]
+    return `${window.location.origin}/p/${studentSlug}`;
+  }, [studentSlug]);
 
-      lastErr = error;
-      const msg = String((error as any)?.message ?? error ?? '');
-
-      // Se for erro de coluna inexistente, tenta próximo SELECT
-      if (msg.includes('does not exist') || msg.includes('column')) continue;
-
-      // Outros erros: para aqui
-      break;
+  const weekLabel = useMemo(() => {
+    if (!selectedWeek?.week_start) return '—';
+    // label do banco pode vir pronto; se não, formatamos
+    if (selectedWeek.label) {
+      // geralmente "Semana DD/MM – DD/MM"
+      return selectedWeek.label.replace(/^Semana\s*/i, '').trim();
     }
+    const start = formatBRShort(selectedWeek.week_start);
+    const end = selectedWeek.week_end ? formatBRShort(selectedWeek.week_end) : '—';
+    return `${start} – ${end}`;
+  }, [selectedWeek]);
 
-    return { data: null, error: lastErr };
+  async function loadBase() {
+    setLoading(true);
+    setError(null);
+
+    try {
+      // 1) Student
+      // IMPORTANTE: NÃO selecionar students.pace_p1k (não existe)
+      // Use o campo real (p1k_sec_per_km) se existir no seu schema.
+      const { data: st, error: stErr } = await supabase
+        .from('students')
+        .select('id,name,p1k_sec_per_km')
+        .eq('id', studentId)
+        .single();
+
+      if (stErr) throw stErr;
+      setStudent(st as any);
+
+      // 2) Weeks
+      const { data: wk, error: wkErr } = await supabase
+        .from('training_weeks')
+        .select('id,week_start,week_end,label')
+        .eq('student_id', studentId)
+        .order('week_start', { ascending: false });
+
+      if (wkErr) throw wkErr;
+
+      const list = (wk || []) as WeekRow[];
+      setWeeks(list);
+
+      const defaultWeek = list[0] || null;
+      setSelectedWeekId(defaultWeek?.id ?? null);
+      setSelectedWeek(defaultWeek);
+    } catch (e: any) {
+      setError(`Erro ao carregar aluno: ${e?.message || String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadWeekSummary(weekId: string) {
+    setError(null);
+
+    try {
+      // Usa o seu endpoint /api/portal/summary (que já consolida execuções)
+      const qs = new URLSearchParams({
+        studentId,
+        weekId,
+      }).toString();
+
+      const res = await fetch(`/api/portal/summary?${qs}`, { cache: 'no-store' });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} ${txt}`);
+      }
+      const json = await res.json();
+
+      // Esperado:
+      // json.counts = {draft, ready, completed, canceled, pending}
+      // json.workouts = array (cards)
+      setCounts({
+        draft: json?.counts?.draft ?? 0,
+        ready: json?.counts?.ready ?? 0,
+        completed: json?.counts?.completed ?? 0,
+        canceled: json?.counts?.canceled ?? 0,
+        pending: json?.counts?.pending ?? 0,
+      });
+
+      setWorkouts((json?.workouts ?? []) as SummaryWorkoutRow[]);
+    } catch (e: any) {
+      setError(`Erro ao carregar treinos: ${e?.message || String(e)}`);
+      setWorkouts([]);
+      setCounts({ draft: 0, ready: 0, completed: 0, canceled: 0, pending: 0 });
+    }
   }
 
   useEffect(() => {
-    let mounted = true;
+    if (!studentId) return;
+    loadBase();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studentId]);
 
-    async function load() {
-      setLoading(true);
-      setBanner(null);
+  useEffect(() => {
+    if (!selectedWeekId) return;
+    const wk = weeks.find((w) => w.id === selectedWeekId) || null;
+    setSelectedWeek(wk);
+    loadWeekSummary(selectedWeekId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedWeekId]);
 
-      // 1) Student
-      {
-        const { data: st, error: stErr } = await fetchStudentRow(studentId);
+  async function onSharePortal() {
+    if (!portalUrl) return;
 
-        if (!mounted) return;
-
-        if (stErr) {
-          setStudent(null);
-          setWorkouts([]);
-          setExecMap({});
-          setWeekStart(null);
-          setBanner(`Erro ao carregar aluno: ${stErr.message}`);
-          setLoading(false);
-          return;
-        }
-
-        if (!st) {
-          setStudent(null);
-          setWorkouts([]);
-          setExecMap({});
-          setWeekStart(null);
-          setBanner('Aluno não encontrado');
-          setLoading(false);
-          return;
-        }
-
-        setStudent(st as any);
-      }
-
-      // 2) Week start
-      const resolvedWeekId = weekId;
-      if (!resolvedWeekId) {
-        // Se não passar week, usa a semana atual; essa tela usa weekId em outras partes do app,
-        // mas aqui só precisamos do start para exibir e filtrar.
-        setWeekStart(currentWeekStartISO);
-      } else {
-        const { data: wk, error: wkErr } = await supabase
-          .from('weeks')
-          .select('id,week_start')
-          .eq('id', resolvedWeekId)
-          .maybeSingle();
-
-        if (!mounted) return;
-
-        if (wkErr) {
-          setBanner(`Erro ao carregar semana: ${wkErr.message}`);
-          setWeekStart(null);
-        } else {
-          setWeekStart(wk?.week_start ?? null);
-        }
-      }
-
-      // 3) Workouts (semana)
-      const weekStartISO = (resolvedWeekId ? null : currentWeekStartISO) || currentWeekStartISO;
-
-      const { data: wos, error: woErr } = await supabase
-        .from('workouts')
-        .select('id,student_id,week_id,planned_date,title,kind,total_km,status')
-        .eq('student_id', studentId)
-        // Se a tabela usa week_id, fica pelo weekId quando existir. Senão filtra por planned_date range.
-        .in(
-          'status',
-          // garante que vem tudo (inclui cancelado)
-          ['draft', 'ready', 'completed', 'canceled']
-        )
-        .order('planned_date', { ascending: true });
-
-      if (!mounted) return;
-
-      if (woErr) {
-        setBanner(`Erro ao carregar treinos: ${woErr.message}`);
-        setWorkouts([]);
-        setExecMap({});
-        setLoading(false);
-        return;
-      }
-
-      const list = (wos ?? []) as WorkoutRow[];
-      setWorkouts(list);
-
-      // 4) Execução por treino (se existir)
-      const ids = list.map((x) => x.id);
-      if (ids.length > 0) {
-        const { data: exs, error: exErr } = await supabase
-          .from('workout_executions')
-          .select('workout_id,performed_at')
-          .in('workout_id', ids);
-
-        if (!mounted) return;
-
-        if (exErr) {
-          // não trava a tela por isso
-          setExecMap({});
-        } else {
-          const map: Record<string, ExecutionRow | null> = {};
-          for (const row of exs ?? []) {
-            const r = row as ExecutionRow;
-            map[r.workout_id] = r;
-          }
-          setExecMap(map);
-        }
-      } else {
-        setExecMap({});
-      }
-
-      setLoading(false);
-    }
-
-    load();
-
-    return () => {
-      mounted = false;
+    const shareData = {
+      title: 'Portal do aluno',
+      text: 'Acesse seus treinos pelo link:',
+      url: portalUrl,
     };
-  }, [supabase, studentId, weekId, currentWeekStartISO]);
 
-  function workoutStatusLabel(w: WorkoutRow, ex: ExecutionRow | null) {
-    if (w.status === 'draft') return 'Rascunho';
-    if (w.status === 'canceled') return 'Cancelado';
-    if (w.status === 'completed') {
-      const dt = ex?.performed_at ? formatBRShort(ex.performed_at) : null;
-      return dt ? `Concluído (${dt})` : 'Concluído';
+    // 1) Se o dispositivo suporta share sheet (Android/iOS), abre a lista (WhatsApp incluso)
+    const canShare =
+      typeof navigator !== 'undefined' &&
+      typeof (navigator as any).share === 'function' &&
+      (typeof (navigator as any).canShare !== 'function' || (navigator as any).canShare(shareData));
+
+    if (canShare) {
+      try {
+        await (navigator as any).share(shareData);
+        return;
+      } catch {
+        // se usuário cancelar, não faz nada
+      }
     }
-    // ready = publicado (pendente aluno)
-    return 'Publicado';
-  }
 
-  function canEdit(w: WorkoutRow, ex: ExecutionRow | null) {
-    // regra: só pode editar se NÃO tiver realizado
-    if (w.status === 'completed') return false;
-    if (w.status === 'canceled') return false;
-    if (ex?.performed_at) return false;
-    return true;
-  }
-
-  function canPublish(w: WorkoutRow, ex: ExecutionRow | null) {
-    // não publicar se já publicado/concluído/cancelado
-    if (w.status !== 'draft') return false;
-    if (ex?.performed_at) return false;
-    return true;
-  }
-
-  async function publishWorkout(workoutId: string) {
-    setBanner(null);
-    const { error } = await supabase.from('workouts').update({ status: 'ready' }).eq('id', workoutId);
-    if (error) {
-      setBanner(`Erro ao publicar treino: ${error.message}`);
+    // 2) Fallback: copia link
+    const ok = await safeCopy(portalUrl);
+    if (ok) {
+      alert('Link copiado! Cole no WhatsApp para compartilhar.');
       return;
     }
-    // refresh local
-    setWorkouts((prev) =>
-      prev.map((w) => (w.id === workoutId ? { ...w, status: 'ready' } : w))
+
+    // 3) Último fallback: prompt
+    window.prompt('Copie o link do portal:', portalUrl);
+  }
+
+  async function onPublishWorkout(workoutId: string) {
+    if (!confirm('Deseja publicar este treino?')) return;
+
+    try {
+      const { error: upErr } = await supabase
+        .from('workouts')
+        .update({ status: 'ready' })
+        .eq('id', workoutId);
+
+      if (upErr) throw upErr;
+
+      if (selectedWeekId) await loadWeekSummary(selectedWeekId);
+    } catch (e: any) {
+      alert(`Erro ao publicar: ${e?.message || String(e)}`);
+    }
+  }
+
+  const canEditWorkout = (w: SummaryWorkoutRow) => {
+    // Regra: só pode editar se não tiver execução concluída
+    // (se existir execution_status completed, bloqueia)
+    return !(String(w.execution_status || '').toLowerCase() === 'completed');
+  };
+
+  const showPublishButton = (w: SummaryWorkoutRow) => {
+    // Só faz sentido "Publicar" quando é rascunho
+    return w.status === 'draft';
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-white p-6">
+        <div className="opacity-80">Carregando…</div>
+      </div>
     );
   }
 
-  function openPortalPreview() {
-    if (!student?.public_slug || !student.portal_token) {
-      setBanner('Portal ainda não habilitado para este aluno.');
-      return;
-    }
-    const url = `${window.location.origin}/p/${student.public_slug}?t=${student.portal_token}&qa=1`;
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }
-
-  async function sharePortal() {
-    if (!student) return;
-    setBanner(null);
-
-    let st: any = student;
-
-    // Garante que exista token/slug (ativando o portal se necessário)
-    if (!st.portal_enabled || !st.portal_token || !st.public_slug) {
-      const { error: upErr } = await supabase.from('students').update({ portal_enabled: true }).eq('id', st.id);
-
-      if (upErr) {
-        setBanner(`Erro ao habilitar portal: ${upErr.message}`);
-        return;
-      }
-
-      const { data: refreshed, error: refErr } = await fetchStudentRow(st.id);
-
-      if (refErr || !refreshed) {
-        setBanner(`Erro ao carregar aluno: ${String((refErr as any)?.message ?? refErr)}`);
-        return;
-      }
-
-      st = refreshed;
-      setStudent(refreshed as any);
-    }
-
-    if (!st.portal_token || !st.public_slug) {
-      setBanner('Não foi possível gerar o link do portal.');
-      return;
-    }
-
-    const url = `${window.location.origin}/p/${st.public_slug}?t=${encodeURIComponent(st.portal_token)}`;
-    const shareData = {
-      title: 'Portal do aluno',
-      text: `Treinos de ${st.name}`,
-      url,
-    };
-
-    try {
-      const nav: any = navigator;
-      if (nav?.share) {
-        await nav.share(shareData);
-        return;
-      }
-    } catch (e: any) {
-      // Usuário cancelou o share
-      if (e?.name === 'AbortError') return;
-      // segue fallback abaixo
-    }
-
-    // Fallback: copia e abre WhatsApp com mensagem pré-preenchida
-    try {
-      const clip: any = navigator;
-      await clip?.clipboard?.writeText?.(url);
-    } catch {}
-
-    const msg = encodeURIComponent(`${shareData.text}: ${url}`);
-    window.open(`https://wa.me/?text=${msg}`, '_blank', 'noopener,noreferrer');
-    setBanner('Link copiado. Abrindo WhatsApp…');
-  }
-
-  const plannedCount = workouts.length;
-  const readyCount = workouts.filter((w) => w.status === 'ready').length;
-  const completedCount = workouts.filter((w) => w.status === 'completed').length;
-  const canceledCount = workouts.filter((w) => w.status === 'canceled').length;
-
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto max-w-3xl p-4">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <div className="text-sm text-slate-400">Aluno</div>
-            <div className="text-2xl font-bold">{student?.name ?? '—'}</div>
-            <div className="mt-1 text-slate-300">Ritmo P1k: {formatPace(getP1kSec(student))}</div>
-          </div>
-          <div className="pt-2">
-            <Link
-              className="text-slate-200 underline underline-offset-4 hover:text-white"
-              href="/students"
-            >
-              Voltar
-            </Link>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-2">
-          <Link
-            className="w-full rounded-2xl bg-slate-800/60 px-4 py-3 text-center text-lg font-semibold hover:bg-slate-800"
-            href={`/students/${studentId}/workouts/new${weekId ? `?week=${encodeURIComponent(weekId)}` : ''}`}
-          >
-            + Programar treino
-          </Link>
-
-          <Link
-            className="w-full rounded-2xl bg-slate-800/60 px-4 py-3 text-center text-lg font-semibold hover:bg-slate-800"
-            href={`/students/${studentId}/reports/4w`}
-          >
-            Relatório 4 semanas
-          </Link>
-
-          <button
-            type="button"
-            className="w-full rounded-2xl bg-emerald-400 px-4 py-3 text-center text-lg font-semibold text-slate-900 hover:bg-emerald-300"
-            onClick={sharePortal}
-          >
-            Compartilhar portal
-          </button>
-
-          <button
-            type="button"
-            className="w-full rounded-2xl bg-slate-800/60 px-4 py-3 text-center text-lg font-semibold hover:bg-slate-800"
-            onClick={openPortalPreview}
-          >
-            Ver como aluno (QA)
-          </button>
-        </div>
-
-        {banner && (
-          <div className="mt-4 rounded-2xl bg-amber-800/40 px-4 py-3 text-amber-100">
-            {banner}
-          </div>
-        )}
-
-        <div className="mt-6 rounded-3xl bg-emerald-900/25 p-4">
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-white p-4 sm:p-6">
+      <div className="max-w-3xl mx-auto">
+        {/* Header */}
+        <div className="rounded-3xl bg-white/5 border border-white/10 p-5 sm:p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-xl font-bold">Planejamento por semana (Seg → Dom)</div>
-              <div className="text-slate-300">Semana {weekStart ? `${formatWeekBR(weekStart)} —` : '—'}</div>
+              <div className="text-sm opacity-70">Aluno</div>
+              <div className="text-2xl sm:text-3xl font-extrabold leading-tight">
+                {student?.name || '—'}
+              </div>
+              <div className="mt-2 text-sm opacity-80">
+                Ritmo P1k: <b>{paceLabelFromP1K(student?.p1k_sec_per_km ?? null)}</b>
+              </div>
             </div>
-            <div className="flex flex-col gap-2">
+
+            <button
+              className="underline opacity-90 hover:opacity-100"
+              onClick={() => router.back()}
+              type="button"
+            >
+              Voltar
+            </button>
+          </div>
+
+          {/* Action bar */}
+          <div className="mt-4 grid grid-cols-1 gap-3">
+            <Link
+              href={`/students/${studentId}/workouts/new${selectedWeekId ? `?weekId=${selectedWeekId}` : ''}`}
+              className="w-full rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-center font-semibold"
+            >
+              + Programar treino
+            </Link>
+
+            <Link
+              href={`/students/${studentId}/reports/4w`}
+              className="w-full rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-center font-semibold"
+            >
+              Relatório 4 semanas
+            </Link>
+
+            <button
+              onClick={onSharePortal}
+              className="w-full rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 px-4 py-3 text-center font-extrabold"
+              type="button"
+              disabled={!portalUrl}
+              title={!portalUrl ? 'Nome do aluno sem slug disponível para gerar link' : 'Compartilhar portal'}
+            >
+              Compartilhar portal
+            </button>
+
+            <Link
+              href={studentSlug ? `/p/${studentSlug}` : '#'}
+              className="w-full rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-center font-semibold"
+            >
+              Ver como aluno (QA)
+            </Link>
+          </div>
+
+          {error && (
+            <div className="mt-4 rounded-2xl bg-amber-500/20 border border-amber-400/30 px-4 py-3 text-amber-100">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Week selector + counts */}
+        <div className="mt-5 rounded-3xl bg-white/5 border border-white/10 p-5 sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xl font-extrabold">Planejamento por semana (Seg → Dom)</div>
+              <div className="mt-1 opacity-80">Semana {weekLabel}</div>
+            </div>
+
+            {selectedWeekId ? (
               <Link
-                className="rounded-2xl bg-slate-800/60 px-4 py-3 text-center font-semibold hover:bg-slate-800"
-                href={weekId ? `/dashboard/week/${weekId}` : '/dashboard'}
+                href={`/dashboard/week/${selectedWeekId}`}
+                className="rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-center font-semibold"
               >
                 Painel da semana
               </Link>
-              <button
-                type="button"
-                className="rounded-2xl bg-slate-800/60 px-4 py-3 text-center font-semibold opacity-60"
-                disabled
-              >
-                Publicar semana
-              </button>
-            </div>
+            ) : null}
           </div>
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <div className="rounded-full bg-slate-800/70 px-3 py-2 text-sm font-semibold">
-              Programados: {plannedCount}
-            </div>
-            <div className="rounded-full bg-slate-800/70 px-3 py-2 text-sm font-semibold">
-              Publicados: {readyCount}
-            </div>
-            <div className="rounded-full bg-slate-800/70 px-3 py-2 text-sm font-semibold">
-              Concluídos: {completedCount}
-            </div>
-            <div className="rounded-full bg-slate-800/70 px-3 py-2 text-sm font-semibold">
-              Cancelados: {canceledCount}
-            </div>
+          {/* Weeks pills */}
+          <div className="mt-4 flex gap-3 overflow-x-auto pb-2">
+            {weeks.slice(0, 8).map((w) => {
+              const label = w.label
+                ? w.label.replace(/^Semana\s*/i, '').trim()
+                : `${formatBRShort(w.week_start)} – ${w.week_end ? formatBRShort(w.week_end) : '—'}`;
+
+              const active = w.id === selectedWeekId;
+
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => setSelectedWeekId(w.id)}
+                  className={[
+                    'whitespace-nowrap rounded-full px-4 py-2 font-semibold border',
+                    active
+                      ? 'bg-emerald-400 text-slate-950 border-emerald-200'
+                      : 'bg-white/5 hover:bg-white/10 border-white/10 text-white',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
 
-          <div className="mt-6">
-            <div className="font-semibold">Treinos da semana</div>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <span className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold">
+              Programados: <b>{counts.draft + counts.ready + counts.completed + counts.canceled}</b>
+            </span>
+            <span className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold">
+              Publicados: <b>{counts.ready}</b>
+            </span>
+            <span className="rounded-full bg-white/10 px-4 py-2 text-sm font-semibold">
+              Concluídos: <b>{counts.completed}</b>
+            </span>
+          </div>
+        </div>
 
-            {loading ? (
-              <div className="mt-3 text-slate-300">Carregando…</div>
-            ) : workouts.length === 0 ? (
-              <div className="mt-3 text-slate-300">Nenhum treino nesta semana.</div>
+        {/* Workouts list */}
+        <div className="mt-5 rounded-3xl bg-white/5 border border-white/10 p-5 sm:p-6">
+          <div className="font-extrabold text-xl">Treinos da semana</div>
+
+          <div className="mt-4 space-y-5">
+            {workouts.length === 0 ? (
+              <div className="opacity-70">Nenhum treino encontrado nesta semana.</div>
             ) : (
-              <div className="mt-3 space-y-4">
-                {workouts.map((w) => {
-                  const ex = execMap[w.id] ?? null;
-                  const statusLabel = workoutStatusLabel(w, ex);
+              workouts.map((w) => {
+                const planned = w.planned_date ? `${weekdayShortPT(w.planned_date)}, ${formatBRShort(w.planned_date)}` : '—';
+                const stLabel = statusLabelPT(w.status, w.execution_label);
 
-                  const dateLabel = `${weekdayShortBR(w.planned_date)}, ${formatBRShort(
-                    w.planned_date
-                  )}`;
+                const typeLabel = templateLabelPT(w.template_type);
+                const km = (w.total_km ?? 0).toFixed(1).replace('.', ',');
+                const canEdit = canEditWorkout(w);
 
-                  const kindLabel = w.kind ? w.kind : '—';
-                  const totalLabel = w.total_km != null ? `${w.total_km.toFixed(1).replace('.', ',')} km` : '—';
-
-                  const showEdit = canEdit(w, ex);
-                  const showPublish = canPublish(w, ex);
-
-                  return (
-                    <div key={w.id} className="rounded-3xl bg-emerald-900/25 p-4">
-                      {/* Linha 1: data prevista + status */}
-                      <div className="flex flex-wrap items-center gap-2 text-slate-200">
-                        <div className="font-semibold">{dateLabel}</div>
-                        <div className="text-slate-400">•</div>
-                        <div className="text-slate-300">{statusLabel}</div>
-                      </div>
-
-                      {/* Linha 2: tipo + total */}
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-slate-300">
-                        <div>{kindLabel}</div>
-                        <div className="text-slate-400">•</div>
-                        <div>Total: {totalLabel}</div>
-                      </div>
-
-                      {/* Linha 3: título (com quebra) */}
-                      <div className="mt-3 text-2xl font-bold leading-snug break-words">
-                        {w.title ?? 'Treino'}
-                      </div>
-
-                      {/* Linha 4: execução */}
-                      <div className="mt-2 text-slate-300">
-                        Execução do aluno:{' '}
-                        <span className="font-semibold">
-                          {w.status === 'completed'
-                            ? statusLabel
-                            : w.status === 'canceled'
-                              ? 'Cancelado'
-                              : ex?.performed_at
-                                ? `Concluído (${formatBRShort(ex.performed_at)})`
-                                : '—'}
-                        </span>
-                      </div>
-
-                      {/* Separador */}
-                      <div className="mt-4 h-[2px] w-full rounded-full bg-emerald-300/30" />
-
-                      {/* Ações sempre no fim */}
-                      <div className="mt-4 grid gap-2">
-                        {showEdit && (
-                          <Link
-                            className="rounded-2xl bg-slate-800/70 px-4 py-3 text-center font-semibold hover:bg-slate-800"
-                            href={`/workouts/${w.id}/edit`}
-                          >
-                            Editar
-                          </Link>
-                        )}
-
-                        {showPublish && (
-                          <button
-                            type="button"
-                            className="rounded-2xl bg-emerald-400 px-4 py-3 text-center font-semibold text-slate-900 hover:bg-emerald-300"
-                            onClick={() => publishWorkout(w.id)}
-                          >
-                            Publicar
-                          </button>
-                        )}
-
-                        <Link
-                          className="rounded-2xl bg-slate-800/70 px-4 py-3 text-center font-semibold hover:bg-slate-800"
-                          href={student?.public_slug && student?.portal_token ? `/p/${student.public_slug}?t=${student.portal_token}&qa=1` : '#'}
-                          target="_blank"
-                          rel="noreferrer"
-                          onClick={(e) => {
-                            if (!student?.public_slug || !student?.portal_token) {
-                              e.preventDefault();
-                              setBanner('Portal ainda não habilitado para este aluno.');
-                            }
-                          }}
-                        >
-                          Ver no portal (QA)
-                        </Link>
-                      </div>
+                return (
+                  <div key={w.id} className="rounded-3xl bg-white/5 border border-white/10 p-4">
+                    {/* Linha 1: data + status */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 opacity-90">
+                      <span className="font-semibold">{planned}</span>
+                      <span className="opacity-60">•</span>
+                      <span>{stLabel}</span>
                     </div>
-                  );
-                })}
-              </div>
+
+                    {/* Linha 2: tipo + total */}
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 opacity-85">
+                      <span>{typeLabel}</span>
+                      <span className="opacity-60">•</span>
+                      <span>
+                        Total: <b>{km} km</b>
+                      </span>
+                    </div>
+
+                    {/* Título */}
+                    <div className="mt-3 text-2xl font-extrabold leading-snug break-words">
+                      {w.title || 'Treino'}
+                    </div>
+
+                    {/* Execução do aluno */}
+                    <div className="mt-3 opacity-85">
+                      Execução do aluno: <b>{w.execution_label ? w.execution_label : '—'}</b>
+                    </div>
+
+                    {/* Separador */}
+                    <div className="mt-4 h-[2px] w-full rounded bg-emerald-400/40" />
+
+                    {/* Botões (sempre no fim) */}
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      {canEdit ? (
+                        <Link
+                          href={`/workouts/${w.id}/edit`}
+                          className="rounded-2xl bg-white/10 hover:bg-white/15 border border-white/10 px-5 py-3 font-bold text-center"
+                        >
+                          Editar
+                        </Link>
+                      ) : null}
+
+                      {showPublishButton(w) ? (
+                        <button
+                          type="button"
+                          onClick={() => onPublishWorkout(w.id)}
+                          className="rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 px-5 py-3 font-extrabold"
+                        >
+                          Publicar
+                        </button>
+                      ) : null}
+
+                      <Link
+                        href={studentSlug ? `/p/${studentSlug}/workouts/${w.id}` : '#'}
+                        className="rounded-2xl bg-slate-900/60 hover:bg-slate-900/80 border border-white/10 px-5 py-3 font-bold text-center"
+                      >
+                        Ver no portal (QA)
+                      </Link>
+                    </div>
+                  </div>
+                );
+              })
             )}
           </div>
         </div>
 
-        <div className="mt-8 text-center text-xs text-slate-500">PaceLink</div>
+        <div className="h-10" />
       </div>
     </div>
   );
