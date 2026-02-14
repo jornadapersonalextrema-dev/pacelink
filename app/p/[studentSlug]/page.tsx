@@ -202,9 +202,27 @@ export default function StudentPortalHomePage() {
             ) : null}
           </div>
 
-          <button className="text-sm underline text-white/70" onClick={() => window.location.reload()}>
-            Atualizar
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              className="text-sm underline text-white/70"
+              onClick={() => {
+                // Obs: se /students estiver protegido por auth/middleware, este link pode não abrir para o aluno.
+                // Nesse caso, a alternativa correta é criar uma rota de relatório dentro de /p/ que use o mesmo token (?t=...).
+                const studentId = data?.student?.id;
+                if (!studentId) return;
+                const q = new URLSearchParams();
+                if (token) q.set('t', token);
+                if (preview) q.set('preview', '1');
+                router.push(`/students/${studentId}/reports/4w?${q.toString()}`);
+              }}
+            >
+              Relatório 4 semanas
+            </button>
+
+            <button className="text-sm underline text-white/70" onClick={() => window.location.reload()}>
+              Atualizar
+            </button>
+          </div>
         </div>
       </header>
 
@@ -268,6 +286,10 @@ export default function StudentPortalHomePage() {
                             <div className="mt-1 text-xs text-white/60">
                               Concluídos: {d.completed} · Pendentes: {d.pending} · Cancelados: {d.canceled}
                             </div>
+
+                            <div className="mt-2 text-xs text-white/70">
+                              {d.workouts_count > 0 ? (active ? 'Ocultar treinos ▲' : 'Ver treinos ▼') : 'Sem treinos'}
+                            </div>
                           </button>
                         );
                       })}
@@ -321,52 +343,6 @@ export default function StudentPortalHomePage() {
                       </div>
                     ) : null}
                   </>
-                )}
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <div className="font-semibold">Treinos da semana</div>
-
-                {workouts.length === 0 ? (
-                  <div className="mt-3 text-sm text-white/70">Nenhum treino publicado para esta semana ainda.</div>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    {workouts.map((w: any) => {
-                      const ex = latest[w.id];
-
-                      const progress =
-                        w.portal_progress_label ||
-                        (w.status === 'canceled'
-                          ? 'Cancelado'
-                          : ex?.status === 'completed'
-                            ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
-                            : ex?.status === 'running' || ex?.status === 'paused' || ex?.status === 'in_progress'
-                              ? 'Em andamento'
-                              : w.status === 'ready'
-                                ? 'Pendente'
-                                : '—');
-
-                      const title = w.title || TEMPLATE_LABEL[w.template_type] || 'Treino';
-                      const tpl = TEMPLATE_LABEL[w.template_type] || 'Treino';
-
-                      return (
-                        <button
-                          key={w.id}
-                          className="w-full text-left rounded-xl border border-white/10 bg-black/20 hover:bg-black/30 transition p-4"
-                          onClick={() => {
-                            const q = new URLSearchParams({ t: token });
-                            if (preview) q.set('preview', '1');
-                            router.push(`/p/${studentSlug}/workouts/${w.id}?${q.toString()}`);
-                          }}
-                        >
-                          <div className="text-xs text-white/60">
-                            {tpl} · {kmLabel(w.total_km)} km · {progress}
-                          </div>
-                          <div className="mt-1 font-semibold">{title}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
                 )}
               </div>
             </>
