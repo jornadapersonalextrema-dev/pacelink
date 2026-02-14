@@ -62,8 +62,12 @@ function shortId(len = 6) {
 function randomToken(bytes = 24) {
   const arr = new Uint8Array(bytes);
   crypto.getRandomValues(arr);
+
   let bin = '';
-  for (const b of arr) bin += String.fromCharCode(b);
+  for (let i = 0; i < arr.length; i++) {
+    bin += String.fromCharCode(arr[i]);
+  }
+
   // base64url
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
