@@ -176,6 +176,10 @@ export default function StudentPortalHomePage() {
     for (const d of days) {
       d.planned_km = Math.round(d.planned_km * 10) / 10;
       d.actual_km = Math.round(d.actual_km * 10) / 10;
+
+      // (opcional) ordenar treinos dentro do dia, se existir "planned_order" ou algo semelhante.
+      // Mantém estável sem quebrar nada:
+      // d.workouts.sort((a, b) => Number(a.planned_order || 0) - Number(b.planned_order || 0));
     }
 
     return days;
@@ -186,6 +190,24 @@ export default function StudentPortalHomePage() {
     if (preview) q.set('preview', '1');
     router.push(`/p/${studentSlug}/workouts/${workoutId}?${q.toString()}`);
   }
+
+  // Bottom-sheet para dias com 2+ treinos
+  const [sheetDay, setSheetDay] = useState<DayAgg | null>(null);
+
+  useEffect(() => {
+    // quando muda a semana, fecha sheet
+    setSheetDay(null);
+  }, [week?.id]);
+
+  useEffect(() => {
+    // trava scroll do body quando sheet abre (sem dependências externas)
+    if (!sheetDay) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [sheetDay]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
@@ -198,7 +220,9 @@ export default function StudentPortalHomePage() {
               {week ? (week.label || `Semana ${formatBRShort(week.week_start)} – ${formatBRShort(week.week_end)}`) : '—'}
             </div>
             {preview ? (
-              <div className="mt-1 text-xs text-amber-200">Modo de teste (prévia do treinador): registro de execução desabilitado.</div>
+              <div className="mt-1 text-xs text-amber-200">
+                Modo de teste (prévia do treinador): registro de execução desabilitado.
+              </div>
             ) : null}
           </div>
 
@@ -264,7 +288,6 @@ export default function StudentPortalHomePage() {
                   <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {weekDays.map((d) => {
                       const hasWorkout = d.workouts_count > 0;
-                      const firstWorkout = hasWorkout ? d.workouts[0] : null;
 
                       const actionLabel =
                         !hasWorkout
@@ -278,8 +301,17 @@ export default function StudentPortalHomePage() {
                           key={d.day}
                           disabled={!hasWorkout}
                           onClick={() => {
-                            if (!firstWorkout?.id) return;
-                            goToWorkout(String(firstWorkout.id));
+                            if (!hasWorkout) return;
+
+                            if (d.workouts_count === 1) {
+                              const only = d.workouts[0];
+                              if (!only?.id) return;
+                              goToWorkout(String(only.id));
+                              return;
+                            }
+
+                            // 2+ treinos: abrir bottom-sheet
+                            setSheetDay(d);
                           }}
                           className={`rounded-xl border px-4 py-3 text-left transition ${
                             hasWorkout
@@ -302,7 +334,7 @@ export default function StudentPortalHomePage() {
 
                           {hasWorkout && d.workouts_count === 1 ? (
                             <div className="mt-1 text-xs text-white/50 truncate">
-                              {(firstWorkout?.title || TEMPLATE_LABEL[firstWorkout?.template_type] || 'Treino') as string}
+                              {(d.workouts[0]?.title || TEMPLATE_LABEL[d.workouts[0]?.template_type] || 'Treino') as string}
                             </div>
                           ) : null}
                         </button>
@@ -315,6 +347,87 @@ export default function StudentPortalHomePage() {
           )}
         </div>
       </main>
+
+      {/* Bottom-sheet (somente quando tiver 2+ treinos no mesmo dia) */}
+      {sheetDay ? (
+        <div
+          className="fixed inset-0 z-50"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Treinos de ${formatBRFull(sheetDay.day)}`}
+        >
+          {/* backdrop */}
+          <button
+            className="absolute inset-0 bg-black/70"
+            aria-label="Fechar"
+            onClick={() => setSheetDay(null)}
+          />
+
+          {/* sheet */}
+          <div className="absolute inset-x-0 bottom-0">
+            <div className="mx-auto max-w-3xl px-4 pb-6">
+              <div className="rounded-2xl border border-white/10 bg-background-dark shadow-2xl overflow-hidden">
+                <div className="p-4 border-b border-white/10 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs text-white/60">Treinos de</div>
+                    <div className="font-semibold truncate">{formatBRFull(sheetDay.day)}</div>
+                  </div>
+
+                  <button
+                    className="text-sm underline text-white/70"
+                    onClick={() => setSheetDay(null)}
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div className="p-4 space-y-3">
+                  {sheetDay.workouts.map((w: any) => {
+                    const ex = latest[w.id];
+
+                    const progress =
+                      w.portal_progress_label ||
+                      (w.status === 'canceled'
+                        ? 'Cancelado'
+                        : ex?.status === 'completed'
+                          ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
+                          : ex?.status === 'running' || ex?.status === 'paused' || ex?.status === 'in_progress'
+                            ? 'Em andamento'
+                            : w.status === 'ready'
+                              ? 'Pendente'
+                              : '—');
+
+                    const title = w.title || TEMPLATE_LABEL[w.template_type] || 'Treino';
+                    const tpl = TEMPLATE_LABEL[w.template_type] || 'Treino';
+
+                    return (
+                      <button
+                        key={w.id}
+                        className="w-full text-left rounded-xl border border-white/10 bg-black/20 hover:bg-black/30 transition p-4"
+                        onClick={() => {
+                          const id = String(w.id || '');
+                          if (!id) return;
+                          setSheetDay(null);
+                          goToWorkout(id);
+                        }}
+                      >
+                        <div className="text-xs text-white/60">
+                          {tpl} · {kmLabel(w.total_km)} km · {progress}
+                        </div>
+                        <div className="mt-1 font-semibold">{title}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="px-4 pb-4">
+                  <div className="h-1.5 w-12 rounded-full bg-white/20 mx-auto" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
