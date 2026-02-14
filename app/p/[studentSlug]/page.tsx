@@ -181,11 +181,11 @@ export default function StudentPortalHomePage() {
     return days;
   }, [week?.week_start, workouts, latest]);
 
-  const [selectedDay, setSelectedDay] = useState<string | null>(null);
-
-  useEffect(() => {
-    setSelectedDay(null);
-  }, [week?.id]);
+  function goToWorkout(workoutId: string) {
+    const q = new URLSearchParams({ t: token });
+    if (preview) q.set('preview', '1');
+    router.push(`/p/${studentSlug}/workouts/${workoutId}?${q.toString()}`);
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
@@ -206,8 +206,6 @@ export default function StudentPortalHomePage() {
             <button
               className="text-sm underline text-white/70"
               onClick={() => {
-                // Obs: se /students estiver protegido por auth/middleware, este link pode não abrir para o aluno.
-                // Nesse caso, a alternativa correta é criar uma rota de relatório dentro de /p/ que use o mesmo token (?t=...).
                 const studentId = data?.student?.id;
                 if (!studentId) return;
                 const q = new URLSearchParams();
@@ -263,86 +261,54 @@ export default function StudentPortalHomePage() {
                 {weekDays.length === 0 ? (
                   <div className="mt-3 text-sm text-white/70">Nenhuma semana encontrada.</div>
                 ) : (
-                  <>
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {weekDays.map((d) => {
-                        const active = selectedDay === d.day;
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {weekDays.map((d) => {
+                      const hasWorkout = d.workouts_count > 0;
+                      const firstWorkout = hasWorkout ? d.workouts[0] : null;
 
-                        return (
-                          <button
-                            key={d.day}
-                            onClick={() => setSelectedDay(active ? null : d.day)}
-                            className={`rounded-xl border px-4 py-3 text-left transition ${
-                              active ? 'bg-white/10 border-white/20' : 'bg-black/20 border-white/10 hover:bg-black/30'
-                            }`}
-                          >
-                            <div className="text-xs text-white/60">{formatBRFull(d.day)}</div>
-                            <div className="mt-1 text-sm">
-                              <b>{d.workouts_count}</b> treino(s){' '}
-                              <span className="text-white/60">
-                                · previsto {kmLabel(d.planned_km)} km · real {kmLabel(d.actual_km)} km
-                              </span>
+                      const actionLabel =
+                        !hasWorkout
+                          ? 'Sem treinos'
+                          : d.workouts_count === 1
+                            ? 'Ver treino →'
+                            : `Ver ${d.workouts_count} treinos →`;
+
+                      return (
+                        <button
+                          key={d.day}
+                          disabled={!hasWorkout}
+                          onClick={() => {
+                            if (!firstWorkout?.id) return;
+                            goToWorkout(String(firstWorkout.id));
+                          }}
+                          className={`rounded-xl border px-4 py-3 text-left transition ${
+                            hasWorkout
+                              ? 'bg-black/20 border-white/10 hover:bg-black/30'
+                              : 'bg-black/10 border-white/5 opacity-60 cursor-default'
+                          }`}
+                        >
+                          <div className="text-xs text-white/60">{formatBRFull(d.day)}</div>
+                          <div className="mt-1 text-sm">
+                            <b>{d.workouts_count}</b> treino(s){' '}
+                            <span className="text-white/60">
+                              · previsto {kmLabel(d.planned_km)} km · real {kmLabel(d.actual_km)} km
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-white/60">
+                            Concluídos: {d.completed} · Pendentes: {d.pending} · Cancelados: {d.canceled}
+                          </div>
+
+                          <div className="mt-2 text-xs text-white/70">{actionLabel}</div>
+
+                          {hasWorkout && d.workouts_count === 1 ? (
+                            <div className="mt-1 text-xs text-white/50 truncate">
+                              {(firstWorkout?.title || TEMPLATE_LABEL[firstWorkout?.template_type] || 'Treino') as string}
                             </div>
-                            <div className="mt-1 text-xs text-white/60">
-                              Concluídos: {d.completed} · Pendentes: {d.pending} · Cancelados: {d.canceled}
-                            </div>
-
-                            <div className="mt-2 text-xs text-white/70">
-                              {d.workouts_count > 0 ? (active ? 'Ocultar treinos ▲' : 'Ver treinos ▼') : 'Sem treinos'}
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {selectedDay ? (
-                      <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-4">
-                        <div className="font-semibold">Treinos de {formatBRFull(selectedDay)}</div>
-
-                        <div className="mt-3 space-y-3">
-                          {(weekDays.find((x) => x.day === selectedDay)?.workouts || []).length === 0 ? (
-                            <div className="text-sm text-white/70">Nenhum treino neste dia.</div>
-                          ) : (
-                            (weekDays.find((x) => x.day === selectedDay)?.workouts || []).map((w: any) => {
-                              const ex = latest[w.id];
-
-                              const progress =
-                                w.portal_progress_label ||
-                                (w.status === 'canceled'
-                                  ? 'Cancelado'
-                                  : ex?.status === 'completed'
-                                    ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
-                                    : ex?.status === 'running' || ex?.status === 'paused' || ex?.status === 'in_progress'
-                                      ? 'Em andamento'
-                                      : w.status === 'ready'
-                                        ? 'Pendente'
-                                        : '—');
-
-                              const title = w.title || TEMPLATE_LABEL[w.template_type] || 'Treino';
-                              const tpl = TEMPLATE_LABEL[w.template_type] || 'Treino';
-
-                              return (
-                                <button
-                                  key={w.id}
-                                  className="w-full text-left rounded-xl border border-white/10 bg-black/20 hover:bg-black/30 transition p-4"
-                                  onClick={() => {
-                                    const q = new URLSearchParams({ t: token });
-                                    if (preview) q.set('preview', '1');
-                                    router.push(`/p/${studentSlug}/workouts/${w.id}?${q.toString()}`);
-                                  }}
-                                >
-                                  <div className="text-xs text-white/60">
-                                    {tpl} · {kmLabel(w.total_km)} km · {progress}
-                                  </div>
-                                  <div className="mt-1 font-semibold">{title}</div>
-                                </button>
-                              );
-                            })
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             </>
