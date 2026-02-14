@@ -37,6 +37,37 @@ function formatPace(seconds?: number | null): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// ==== helpers para public_slug / portal_token ====
+
+function slugify(s: string) {
+  const out = (s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return out || 'aluno';
+}
+
+function shortId(len = 6) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[bytes[i] % chars.length];
+  return out;
+}
+
+function randomToken(bytes = 24) {
+  const arr = new Uint8Array(bytes);
+  crypto.getRandomValues(arr);
+  let bin = '';
+  for (const b of arr) bin += String.fromCharCode(b);
+  // base64url
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
 export default function StudentsPage() {
   const router = useRouter();
   const supabase = useMemo(() => createClient(), []);
@@ -46,6 +77,7 @@ export default function StudentsPage() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // sair
   const [signingOut, setSigningOut] = useState(false);
 
   // modal novo aluno
@@ -98,6 +130,28 @@ export default function StudentsPage() {
     load();
   }, [trainerId, supabase]);
 
+  const handleSignOut = async () => {
+    if (signingOut) return;
+
+    const ok = window.confirm('Sair do sistema?');
+    if (!ok) return;
+
+    setSigningOut(true);
+    setError(null);
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      router.replace('/login');
+      router.refresh();
+    } catch (e: any) {
+      setError(e?.message || 'Erro ao sair do sistema.');
+    } finally {
+      setSigningOut(false);
+    }
+  };
+
   const handleCreateStudent = async () => {
     if (!trainerId) return;
 
@@ -115,11 +169,20 @@ export default function StudentsPage() {
     setError(null);
 
     try {
-      const payload = {
+      // ✅ gera slug/token para respeitar NOT NULL
+      const base = slugify(name.trim());
+      const public_slug = `${base}-${shortId(6)}`;
+      const portal_token = randomToken(24);
+
+      const payload: any = {
         trainer_id: trainerId,
         name: name.trim(),
         email: email.trim() ? email.trim() : null,
         p1k_sec_per_km: p1kSec,
+
+        public_slug,
+        portal_token,
+        portal_enabled: false,
       };
 
       const { data, error } = await supabase
@@ -141,28 +204,6 @@ export default function StudentsPage() {
       setError(e?.message || 'Erro ao criar aluno.');
     } finally {
       setSaving(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    if (signingOut) return;
-
-    const ok = window.confirm('Sair do sistema?');
-    if (!ok) return;
-
-    setSigningOut(true);
-    setError(null);
-
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) throw error;
-
-      router.replace('/login');
-      router.refresh();
-    } catch (e: any) {
-      setError(e?.message || 'Erro ao sair do sistema.');
-    } finally {
-      setSigningOut(false);
     }
   };
 
@@ -277,11 +318,7 @@ export default function StudentsPage() {
               <Button onClick={handleCreateStudent} disabled={saving}>
                 {saving ? 'Salvando...' : 'Salvar'}
               </Button>
-
-              <button
-                className="w-full text-center text-slate-400 font-bold py-2"
-                onClick={() => setOpenNew(false)}
-              >
+              <button className="w-full text-center text-slate-400 font-bold py-2" onClick={() => setOpenNew(false)}>
                 Cancelar
               </button>
             </div>
