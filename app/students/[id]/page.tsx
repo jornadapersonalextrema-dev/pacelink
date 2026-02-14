@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { createClient } from '../../../lib/supabaseBrowser';
 
@@ -148,6 +148,11 @@ export default function StudentDetailPage() {
   const [student, setStudent] = useState<StudentRow | null>(null);
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [selectedWeekId, setSelectedWeekId] = useState<string>('');
+
+  // Week selector auto-scroll (para abrir já mostrando a semana atual selecionada)
+  const weeksBarRef = useRef<HTMLDivElement | null>(null);
+  const activeWeekBtnRef = useRef<HTMLButtonElement | null>(null);
+  const didInitialWeekScrollRef = useRef(false);
 
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
@@ -369,6 +374,29 @@ export default function StudentDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWeekId]);
 
+  // Garante que, ao entrar na página, a barra de semanas já esteja posicionada na semana selecionada
+  useEffect(() => {
+    if (!selectedWeekId) return;
+    const bar = weeksBarRef.current;
+    const btn = activeWeekBtnRef.current;
+    if (!bar || !btn) return;
+
+    const targetLeft = Math.max(0, btn.offsetLeft - 12);
+    const behavior: ScrollBehavior = didInitialWeekScrollRef.current ? 'smooth' : 'auto';
+    didInitialWeekScrollRef.current = true;
+
+    // Evita scroll desnecessário se já estiver bem próximo
+    const delta = Math.abs(bar.scrollLeft - targetLeft);
+    if (delta < 8) return;
+
+    try {
+      bar.scrollTo({ left: targetLeft, behavior });
+    } catch {
+      // fallback antigo
+      bar.scrollLeft = targetLeft;
+    }
+  }, [selectedWeekId, weeks.length]);
+
   const selectedWeek = weeks.find((w) => w.id === selectedWeekId) || null;
 
   const readyCount = workouts.filter((w) => w.status === 'ready').length;
@@ -414,7 +442,14 @@ export default function StudentDetailPage() {
               Relatório 4 semanas
             </button>
 
-            <button className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold" onClick={(e) => { e.preventDefault(); e.stopPropagation(); sharePortal(); }}>
+            <button
+              className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                sharePortal();
+              }}
+            >
               Compartilhar portal
             </button>
 
@@ -464,15 +499,18 @@ export default function StudentDetailPage() {
               {weeks.length === 0 ? (
                 <div className="mt-3 text-sm text-slate-600 dark:text-slate-300">Não foi possível carregar semanas.</div>
               ) : (
-                <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
+                <div ref={weeksBarRef} className="mt-3 flex gap-2 overflow-x-auto no-scrollbar">
                   {weeks.map((w) => {
                     const active = w.id === selectedWeekId;
                     const label = w.label || formatWeekRange(w.week_start, w.week_end);
                     // botão curto no mobile: "09/02 – 15/02"
-                    const short = w.week_start ? `${formatBRShort(w.week_start)} – ${formatBRShort(w.week_end || addDaysISO(w.week_start, 6))}` : label;
+                    const short = w.week_start
+                      ? `${formatBRShort(w.week_start)} – ${formatBRShort(w.week_end || addDaysISO(w.week_start, 6))}`
+                      : label;
                     return (
                       <button
                         key={w.id}
+                        ref={active ? activeWeekBtnRef : null}
                         onClick={() => setSelectedWeekId(w.id)}
                         className={
                           'px-3 py-2 rounded-full text-sm font-semibold whitespace-nowrap border ' +
@@ -525,15 +563,16 @@ export default function StudentDetailPage() {
 
                     const doneDate = ex?.performed_at ? formatBRShort(ex.performed_at) : ex?.completed_at ? formatBRShort(ex.completed_at) : null;
 
-                    const statusLabel = w.status === 'canceled'
-                      ? 'Cancelado'
-                      : ex?.status === 'completed'
-                        ? doneDate
-                          ? `Concluído (${doneDate})`
-                          : 'Concluído'
-                        : ex
-                          ? 'Em andamento'
-                          : baseStatusLabel;
+                    const statusLabel =
+                      w.status === 'canceled'
+                        ? 'Cancelado'
+                        : ex?.status === 'completed'
+                          ? doneDate
+                            ? `Concluído (${doneDate})`
+                            : 'Concluído'
+                          : ex
+                            ? 'Em andamento'
+                            : baseStatusLabel;
 
                     const whenLabel = plannedLabel(w, selectedWeek?.week_start);
 
@@ -559,8 +598,7 @@ export default function StudentDetailPage() {
                         </div>
 
                         <div className="mt-2 text-sm text-slate-600 dark:text-slate-300 whitespace-nowrap">
-                          Execução do aluno:{' '}
-                          <span className="font-semibold">{executionLabel}</span>
+                          Execução do aluno: <span className="font-semibold">{executionLabel}</span>
                         </div>
 
                         <div className="mt-3 flex flex-wrap gap-2">
@@ -590,9 +628,7 @@ export default function StudentDetailPage() {
                           </button>
                         </div>
 
-                        {idx < workouts.length - 1 && (
-                          <div className="mt-4 h-[2px] rounded-full bg-emerald-500/25" />
-                        )}
+                        {idx < workouts.length - 1 && <div className="mt-4 h-[2px] rounded-full bg-emerald-500/25" />}
                       </div>
                     );
                   })}
