@@ -6,10 +6,13 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const auth = await requireTrainer();
   if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  // Next.js 16: params é Promise, então precisa await
+  // Next 16: params pode ser Promise
   const { id: studentId } = await params;
 
-  const { data: st, error: stErr } = await auth.supabase
+  // ⚠️ auth.supabase agora pode ser Promise (depois do createServerSupabase async)
+  const supabase = await Promise.resolve(auth.supabase as any);
+
+  const { data: st, error: stErr } = await supabase
     .from('students')
     .select('id,trainer_id,email,auth_user_id,name')
     .eq('id', studentId)
@@ -22,7 +25,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
   const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
 
-  // Se já estiver vinculado, não re-invita
+  // Se já estiver vinculado, não re-invita (evita duplicidade)
   if (st.auth_user_id) {
     return NextResponse.json({
       ok: true,
@@ -51,7 +54,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     return NextResponse.json({ error: 'Convite enviado, mas não foi possível obter user.id.' }, { status: 500 });
   }
 
-  const { error: upErr } = await auth.supabase
+  const { error: upErr } = await supabase
     .from('students')
     .update({ auth_user_id: invitedId })
     .eq('id', studentId)
