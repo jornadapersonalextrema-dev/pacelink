@@ -1,7 +1,7 @@
 import { createServerSupabase } from '@/lib/supabaseServer';
 
 export async function requireAuthUser() {
-  const supabase = createServerSupabase();
+  const supabase = await createServerSupabase();
   const { data, error } = await supabase.auth.getUser();
 
   if (error || !data?.user) {
