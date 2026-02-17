@@ -1,29 +1,26 @@
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
-export function createServerSupabase() {
-  const cookieStore = cookies();
+export async function createServerSupabase() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
+        getAll() {
+          // Next 16: cookieStore já é resolvido (não é Promise aqui)
+          return cookieStore.getAll();
         },
-        set(name: string, value: string, options: any) {
+        setAll(cookiesToSet) {
           try {
-            cookieStore.set({ name, value, ...options });
+            for (const { name, value, options } of cookiesToSet) {
+              // Em Route Handlers funciona. Em Server Components pode lançar.
+              (cookieStore as any).set(name, value, options);
+            }
           } catch {
-            // Em Server Components pode lançar; em Route Handlers funciona
-          }
-        },
-        remove(name: string, options: any) {
-          try {
-            cookieStore.set({ name, value: '', ...options, maxAge: 0 });
-          } catch {
-            // ignore
+            // Ignora quando não é possível setar cookies (ex.: Server Component)
           }
         },
       },
