@@ -22,6 +22,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   if (stErr) return NextResponse.json({ error: stErr.message }, { status: 400 });
   if (!st?.email) return NextResponse.json({ error: 'Aluno sem e-mail cadastrado.' }, { status: 400 });
 
+  // ✅ Bloqueio: não permitir convidar aluno com e-mail igual ao do treinador
+  const trainerEmail = (auth.user?.email ?? '').toString().trim().toLowerCase();
+  const studentEmail = st.email.toString().trim().toLowerCase();
+  if (trainerEmail && studentEmail === trainerEmail) {
+    return NextResponse.json(
+      { error: 'O e-mail do aluno não pode ser o mesmo e-mail do treinador.' },
+      { status: 400 }
+    );
+  }
+
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
   const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
 
@@ -37,7 +47,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
   const admin = createAdminSupabase();
 
-  // Nome do aluno para personalização do template ({{ .Data.nome_do_aluno }})
+  // ✅ data: { nome_do_aluno } para o template ({{ .Data.nome_do_aluno }})
   const nomeDoAluno = (st.name ?? '').toString().trim();
 
   const { data, error } = await admin.auth.admin.inviteUserByEmail(st.email, {
