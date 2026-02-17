@@ -36,7 +36,16 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   }
 
   const admin = createAdminSupabase();
-  const { data, error } = await admin.auth.admin.inviteUserByEmail(st.email, { redirectTo });
+
+  // Nome do aluno para personalização do template ({{ .Data.nome_do_aluno }})
+  const nomeDoAluno = (st.name ?? '').toString().trim();
+
+  const { data, error } = await admin.auth.admin.inviteUserByEmail(st.email, {
+    redirectTo,
+    data: {
+      nome_do_aluno: nomeDoAluno,
+    },
+  });
 
   if (error) {
     return NextResponse.json(
