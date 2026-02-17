@@ -1,12 +1,13 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { requireTrainer } from '@/lib/authGuard';
 import { createAdminSupabase } from '@/lib/supabaseAdmin';
 
-export async function POST(_: Request, { params }: { params: { id: string } }) {
+export async function POST(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const auth = await requireTrainer();
   if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  const studentId = params.id;
+  // Next.js 16: params é Promise, então precisa await
+  const { id: studentId } = await params;
 
   const { data: st, error: stErr } = await auth.supabase
     .from('students')
@@ -21,7 +22,7 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
   const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
 
-  // Se já estiver vinculado, não re-invita (evita duplicidade)
+  // Se já estiver vinculado, não re-invita
   if (st.auth_user_id) {
     return NextResponse.json({
       ok: true,
@@ -58,5 +59,10 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
 
   if (upErr) return NextResponse.json({ error: upErr.message }, { status: 400 });
 
-  return NextResponse.json({ ok: true, invited: true, auth_user_id: invitedId, message: 'Convite enviado com sucesso!' });
+  return NextResponse.json({
+    ok: true,
+    invited: true,
+    auth_user_id: invitedId,
+    message: 'Convite enviado com sucesso!',
+  });
 }
