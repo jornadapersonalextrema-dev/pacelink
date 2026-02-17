@@ -1,14 +1,17 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, type NextRequest } from 'next/server';
 import { requireTrainer } from '@/lib/authGuard';
 import { createAdminSupabase } from '@/lib/supabaseAdmin';
 
-export async function POST() {
+export async function POST(_req: NextRequest) {
   const auth = await requireTrainer();
   if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
+  // ✅ auth.supabase pode ser Promise agora (por causa do createServerSupabase async)
+  const supabase = await Promise.resolve(auth.supabase as any);
+
   const limit = 20; // lote seguro
 
-  const { data: students, error } = await auth.supabase
+  const { data: students, error } = await supabase
     .from('students')
     .select('id,email,auth_user_id,name')
     .eq('trainer_id', auth.user.id)
@@ -39,7 +42,7 @@ export async function POST() {
       continue;
     }
 
-    const { error: upErr } = await auth.supabase.from('students').update({ auth_user_id: invitedId }).eq('id', st.id);
+    const { error: upErr } = await supabase.from('students').update({ auth_user_id: invitedId }).eq('id', st.id);
     if (upErr) {
       results.push({ id: st.id, email, ok: false, error: upErr.message });
       continue;
