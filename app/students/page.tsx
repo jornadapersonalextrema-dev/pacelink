@@ -25,7 +25,6 @@ function parsePaceToSeconds(input: string): number | null {
   const sec = Number(m[2]);
   if (!Number.isFinite(min) || !Number.isFinite(sec) || sec >= 60) return null;
   const total = min * 60 + sec;
-  // faixa bem conservadora (ajuste se quiser)
   if (total < 120 || total > 1200) return null;
   return total;
 }
@@ -36,8 +35,6 @@ function formatPace(seconds?: number | null): string {
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
 }
-
-// ==== helpers para public_slug / portal_token ====
 
 function slugify(s: string) {
   const out = (s || '')
@@ -68,7 +65,6 @@ function randomToken(bytes = 24) {
     bin += String.fromCharCode(arr[i]);
   }
 
-  // base64url
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
 }
 
@@ -81,15 +77,32 @@ export default function StudentsPage() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // sair
   const [signingOut, setSigningOut] = useState(false);
 
-  // modal novo aluno
   const [openNew, setOpenNew] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [p1k, setP1k] = useState('5:00');
   const [saving, setSaving] = useState(false);
+
+  // (1) states + função “Convidar pendentes”
+  const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+  const [inviteLoading, setInviteLoading] = useState(false);
+
+  async function invitePending() {
+    setInviteMsg(null);
+    setInviteLoading(true);
+    try {
+      const res = await fetch('/api/trainer/students/invite-pending', { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+      setInviteMsg(json?.message || 'Convites processados.');
+    } catch (e: any) {
+      setInviteMsg(e?.message || 'Erro ao convidar pendentes.');
+    } finally {
+      setInviteLoading(false);
+    }
+  }
 
   useEffect(() => {
     const boot = async () => {
@@ -173,7 +186,6 @@ export default function StudentsPage() {
     setError(null);
 
     try {
-      // ✅ gera slug/token para respeitar NOT NULL
       const base = slugify(name.trim());
       const public_slug = `${base}-${shortId(6)}`;
       const portal_token = randomToken(24);
@@ -189,12 +201,7 @@ export default function StudentsPage() {
         portal_enabled: false,
       };
 
-      const { data, error } = await supabase
-        .from('students')
-        .insert([payload])
-        .select('id')
-        .single();
-
+      const { data, error } = await supabase.from('students').insert([payload]).select('id').single();
       if (error) throw error;
 
       setOpenNew(false);
@@ -202,7 +209,6 @@ export default function StudentsPage() {
       setEmail('');
       setP1k('5:00');
 
-      // vai direto pro perfil do aluno recém-criado
       router.push(`/students/${data.id}`);
     } catch (e: any) {
       setError(e?.message || 'Erro ao criar aluno.');
@@ -228,6 +234,13 @@ export default function StudentsPage() {
               </button>
             </div>
           ) : null}
+
+          {/* (2) mostrar mensagem do convite */}
+          {inviteMsg && (
+            <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm text-emerald-700 dark:text-emerald-200 mb-4">
+              {inviteMsg}
+            </div>
+          )}
 
           {error && (
             <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-600 dark:text-red-300 mb-4">
@@ -268,16 +281,19 @@ export default function StudentsPage() {
         </div>
       </main>
 
-      {/* CTA fixo */}
+      {/* (3) CTA com dois botões */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background-light dark:from-background-dark via-background-light/95 to-transparent">
-        <div className="max-w-md mx-auto">
+        <div className="max-w-md mx-auto space-y-2">
+          <Button onClick={invitePending} icon="mail" disabled={inviteLoading}>
+            {inviteLoading ? 'Enviando convites…' : 'Convidar pendentes'}
+          </Button>
+
           <Button onClick={() => setOpenNew(true)} icon="person_add">
             Novo Aluno
           </Button>
         </div>
       </div>
 
-      {/* Modal Novo Aluno */}
       {openNew && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
           <Card className="w-full max-w-md p-5">

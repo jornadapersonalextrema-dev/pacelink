@@ -1,118 +1,121 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
-
-import { Topbar } from '../../../components/Topbar';
-import { Button } from '../../../components/Button';
-import { Card } from '../../../components/Card';
-
-import { createClient } from '../../../lib/supabaseBrowser';
-
-function toLoginEmail(identifier: string): string {
-  const raw = (identifier || '').trim();
-  if (!raw) return '';
-  if (raw.includes('@')) return raw.toLowerCase();
-
-  // Se não tem "@", tratamos como WhatsApp (somente números)
-  const digits = raw.replace(/\D/g, '');
-  return digits ? `wa${digits}@pacelink.local` : raw;
-}
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabaseBrowser';
 
 export default function AlunoLoginPage() {
-  const router = useRouter();
-  const search = useSearchParams();
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
 
-  const next = search.get('next') || '/aluno';
-
-  const [identifier, setIdentifier] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  async function handleLogin(e: React.FormEvent) {
+  async function onLogin(e: React.FormEvent) {
     e.preventDefault();
+    setMsg(null);
     setLoading(true);
-    setError(null);
-
-    const email = toLoginEmail(identifier);
 
     try {
-      const { error: authError } = await supabase.auth.signInWithPassword({
-        email,
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
         password,
       });
+      if (error) throw error;
 
-      if (authError) throw authError;
-
-      router.replace(next);
+      router.push('/aluno');
     } catch (err: any) {
-      setError(err?.message || 'Erro ao fazer login');
+      setMsg(err?.message || 'Não foi possível entrar.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onForgot() {
+    setMsg(null);
+    const em = email.trim();
+    if (!em) {
+      setMsg('Informe seu e-mail para receber o link de redefinição de senha.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const redirectTo = `${window.location.origin}/aluno/primeiro-acesso`;
+      const { error } = await supabase.auth.resetPasswordForEmail(em, { redirectTo });
+      if (error) throw error;
+
+      setMsg('Link de redefinição enviado para o seu e-mail. Verifique sua caixa de entrada.');
+    } catch (err: any) {
+      setMsg(err?.message || 'Não foi possível enviar o e-mail.');
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <>
-      <Topbar title="Acesso do Aluno" showBack onBack={() => router.push('/login')} />
+    <div className="p-6">
+      <div className="text-2xl font-extrabold">Portal do Aluno</div>
+      <div className="mt-1 opacity-80">Entre com seu e-mail e senha.</div>
 
-      <main className="flex-1 p-6 flex items-center justify-center">
-        <div className="w-full max-w-sm space-y-4">
-          <Card>
-            <div className="p-4 space-y-3">
-              <div>
-                <div className="text-lg font-semibold">Entrar</div>
-                <div className="text-sm text-white/60">
-                  Use seu <b>WhatsApp</b> (somente números) ou seu <b>e-mail</b>.
-                </div>
-              </div>
-
-              <form className="space-y-3" onSubmit={handleLogin}>
-                <div className="space-y-2">
-                  <label className="block text-sm text-white/70">WhatsApp ou e-mail</label>
-                  <input
-                    value={identifier}
-                    onChange={(e) => setIdentifier(e.target.value)}
-                    className="w-full rounded-lg bg-white/10 ring-1 ring-white/15 px-3 py-2 text-white placeholder-white/40"
-                    placeholder="Ex.: 19999999999 ou aluno@email.com"
-                    autoComplete="username"
-                    required
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-sm text-white/70">Senha</label>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full rounded-lg bg-white/10 ring-1 ring-white/15 px-3 py-2 text-white placeholder-white/40"
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                    required
-                  />
-                </div>
-
-                {error && (
-                  <div className="rounded-lg bg-red-500/10 ring-1 ring-red-400/30 p-3 text-sm text-red-200">
-                    {error}
-                  </div>
-                )}
-
-                <Button type="submit" fullWidth disabled={loading}>
-                  {loading ? 'Entrando...' : 'Entrar'}
-                </Button>
-              </form>
-            </div>
-          </Card>
-
-          <div className="text-xs text-white/50">
-            Se você não tem acesso ainda, peça ao treinador para criar seu usuário e senha inicial.
-          </div>
+      <form onSubmit={onLogin} className="mt-6 space-y-4">
+        <div>
+          <label className="text-sm font-semibold opacity-90">E-mail</label>
+          <input
+            className="mt-1 w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            type="email"
+            placeholder="seuemail@exemplo.com"
+            autoComplete="email"
+          />
         </div>
-      </main>
-    </>
+
+        <div>
+          <label className="text-sm font-semibold opacity-90">Senha</label>
+          <input
+            className="mt-1 w-full rounded-xl bg-white/5 border border-white/10 px-4 py-3 outline-none"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            type="password"
+            placeholder="••••••••"
+            autoComplete="current-password"
+          />
+        </div>
+
+        {msg ? (
+          <div className="rounded-xl bg-amber-500/20 border border-amber-400/30 px-4 py-3 text-amber-100">{msg}</div>
+        ) : null}
+
+        <button
+          disabled={loading}
+          className="w-full rounded-2xl bg-emerald-400 hover:bg-emerald-300 disabled:opacity-60 text-slate-950 px-4 py-3 font-extrabold"
+          type="submit"
+        >
+          Entrar
+        </button>
+
+        <button
+          type="button"
+          disabled={loading}
+          onClick={onForgot}
+          className="w-full rounded-2xl bg-white/10 hover:bg-white/15 disabled:opacity-60 border border-white/10 px-4 py-3 font-semibold"
+        >
+          Esqueci minha senha
+        </button>
+
+        <div className="text-sm opacity-70">
+          Primeiro acesso? Use o link do convite enviado pelo seu treinador (no seu e-mail).
+        </div>
+
+        <Link href="/" className="inline-block text-sm underline opacity-80 hover:opacity-100">
+          Voltar
+        </Link>
+      </form>
+    </div>
   );
 }

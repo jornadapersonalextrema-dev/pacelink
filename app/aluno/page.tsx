@@ -1,314 +1,200 @@
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { createClient } from '../../lib/supabaseBrowser';
-import Topbar from '../../components/Topbar';
+import { createClient } from '@/lib/supabaseBrowser';
 
 type StudentRow = {
   id: string;
   name: string;
-  p1k_pace: string | null;
-  public_slug: string | null;
+  email: string | null;
+  public_slug: string;
 };
 
-type WorkoutRow = {
+type WeekRow = {
+  id: string;
+  week_start: string;
+  week_end: string | null;
+  label: string | null;
+};
+
+type SummaryWorkoutRow = {
   id: string;
   title: string | null;
-  status: 'draft' | 'ready' | 'archived';
-  template_type: 'easy_run' | 'progressive' | 'alternated';
-  planned_date: string | null;
-  planned_day: string | number | null;
-  total_km: number;
-  share_slug: string | null;
-};
-
-type ExecutionRow = {
-  id: string;
-  workout_id: string;
+  template_type: string | null;
   status: string;
-  performed_at: string | null;
-  completed_at: string | null;
-  last_event_at: string | null;
-  started_at: string | null;
-  actual_total_km: number | null;
-  rpe: number | null;
+  total_km: number | null;
+  planned_date: string | null;
+  execution_label: string | null;
 };
 
-const TEMPLATE_LABEL: Record<string, string> = {
-  easy_run: 'Rodagem',
-  progressive: 'Progressivo',
-  alternated: 'Alternado',
-};
-
-function formatDateBR(dateStr?: string | null) {
-  if (!dateStr) return '';
-  // Espera YYYY-MM-DD
-  const parts = dateStr.split('-');
-  if (parts.length !== 3) return dateStr;
-  const [y, m, d] = parts;
-  return `${d}/${m}/${y}`;
+function formatBRShort(dateISO: string) {
+  const [y, m, d] = dateISO.split('-');
+  if (!m || !d) return dateISO;
+  return `${d}/${m}`;
 }
 
-function weekStartKey(dateStr?: string | null) {
-  if (!dateStr) return 'Sem data';
-  const [y, m, d] = dateStr.split('-').map((x) => parseInt(x, 10));
-  if (!y || !m || !d) return 'Sem data';
-  const dt = new Date(y, m - 1, d);
-  const day = dt.getDay(); // 0=domingo
-  const diffToMonday = (day + 6) % 7; // segunda=0
-  dt.setDate(dt.getDate() - diffToMonday);
-  const yy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
+function weekdayShortPT(dateISO: string) {
+  const dt = new Date(dateISO + 'T00:00:00');
+  const w = dt.getDay();
+  const map = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+  return map[w] ?? '';
 }
 
-function formatWeekLabel(weekStart: string) {
-  if (weekStart === 'Sem data') return 'Treinos sem data planejada';
-  const [y, m, d] = weekStart.split('-');
-  return `Semana de ${d}/${m}/${y}`;
+function templateLabelPT(tpl: string | null | undefined) {
+  const v = (tpl || '').toLowerCase();
+  if (v === 'easy_run') return 'Rodagem';
+  if (v === 'progressive') return 'Progressivo';
+  if (v === 'alternated') return 'Alternado';
+  if (v === 'run') return 'Corrida';
+  return tpl || 'Treino';
 }
 
-function pickLatestExecution(rows: ExecutionRow[]) {
-  const toTime = (x?: string | null) => (x ? new Date(x).getTime() : 0);
-  const score = (e: ExecutionRow) =>
-    Math.max(toTime(e.last_event_at), toTime(e.completed_at), toTime(e.started_at), toTime(e.performed_at));
-  return rows.slice().sort((a, b) => score(b) - score(a))[0];
-}
-
-export default function AlunoHome() {
-  const router = useRouter();
+export default function AlunoHomePage() {
   const supabase = useMemo(() => createClient(), []);
+  const router = useRouter();
+
   const [loading, setLoading] = useState(true);
   const [student, setStudent] = useState<StudentRow | null>(null);
-  const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
-  const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | undefined>>({});
-  const [error, setError] = useState<string | null>(null);
+  const [week, setWeek] = useState<WeekRow | null>(null);
+  const [workouts, setWorkouts] = useState<SummaryWorkoutRow[]>([]);
+  const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
+    (async () => {
       setLoading(true);
-      setError(null);
+      setMsg(null);
 
-      const {
-        data: { user },
-        error: userErr,
-      } = await supabase.auth.getUser();
-
-      if (cancelled) return;
-
-      if (userErr) {
-        setError(userErr.message);
-        setLoading(false);
-        return;
-      }
-
-      if (!user) {
-        const next = window.location.pathname + window.location.search;
-        router.replace(`/login?next=${encodeURIComponent(next)}`);
-        return;
-      }
-
-      // 1) Tenta achar aluno vinculado ao usuário logado
-      const { data: s, error: sErr } = await supabase
-        .from('students')
-        .select('id,name,p1k_pace,public_slug')
-        .or(`auth_user_id.eq.${user.id},user_id.eq.${user.id}`)
-        .maybeSingle();
-
-      if (cancelled) return;
-
-      if (sErr) {
-        setError(sErr.message);
-        setLoading(false);
-        return;
-      }
-
-      if (!s) {
-        // 2) Se não for aluno, pode ser treinador: manda para /students
-        const { data: p } = await supabase.from('profiles').select('id').eq('id', user.id).maybeSingle();
-        if (p?.id) {
-          router.replace('/students');
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        if (!userData.user) {
+          router.push('/aluno/login');
           return;
         }
-        setError('Seu usuário não está vinculado a um aluno ou treinador.');
+
+        const { data: st, error: stErr } = await supabase
+          .from('students')
+          .select('id,name,email,public_slug')
+          .eq('auth_user_id', userData.user.id)
+          .single();
+
+        if (stErr) throw stErr;
+        setStudent(st as any);
+
+        const { data: wk, error: wkErr } = await supabase
+          .from('training_weeks')
+          .select('id,week_start,week_end,label')
+          .eq('student_id', st.id)
+          .order('week_start', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (wkErr) throw wkErr;
+        setWeek(wk as any);
+
+        if (wk?.id) {
+          const qs = new URLSearchParams({ studentId: st.id, weekId: wk.id }).toString();
+          const res = await fetch(`/api/portal/summary?${qs}`, { cache: 'no-store' });
+          const json = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(json?.error || `Falha ao carregar treinos (HTTP ${res.status})`);
+          setWorkouts(json?.workouts ?? []);
+        } else {
+          setWorkouts([]);
+        }
+      } catch (e: any) {
+        setMsg(e?.message || 'Erro ao carregar o portal.');
+      } finally {
         setLoading(false);
-        return;
       }
-
-      setStudent(s);
-
-      // 3) Busca treinos disponíveis para o aluno (somente "ready")
-      const { data: ws, error: wErr } = await supabase
-        .from('workouts')
-        .select('id,title,status,template_type,planned_date,planned_day,total_km,share_slug')
-        .eq('student_id', s.id)
-        .eq('status', 'ready')
-        .order('planned_date', { ascending: true, nullsFirst: false })
-        .order('created_at', { ascending: false });
-
-      if (cancelled) return;
-
-      if (wErr) {
-        setError(wErr.message);
-        setLoading(false);
-        return;
-      }
-
-      const list = (ws ?? []) as WorkoutRow[];
-      setWorkouts(list);
-
-      // 4) Busca execuções para mostrar "feito/pendente" (pega a última por treino)
-      const ids = list.map((x) => x.id);
-      if (ids.length > 0) {
-        const { data: execs } = await supabase
-          .from('executions')
-          .select('id,workout_id,status,performed_at,completed_at,last_event_at,started_at,actual_total_km,rpe')
-          .in('workout_id', ids);
-
-        const byWorkout: Record<string, ExecutionRow[]> = {};
-        (execs ?? []).forEach((e: any) => {
-          const wId = e.workout_id as string;
-          if (!byWorkout[wId]) byWorkout[wId] = [];
-          byWorkout[wId].push(e as ExecutionRow);
-        });
-
-        const latest: Record<string, ExecutionRow | undefined> = {};
-        Object.keys(byWorkout).forEach((wId) => {
-          latest[wId] = pickLatestExecution(byWorkout[wId]);
-        });
-        setLatestExecByWorkout(latest);
-      } else {
-        setLatestExecByWorkout({});
-      }
-
-      setLoading(false);
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
+    })();
   }, [router, supabase]);
 
-  const grouped = useMemo(() => {
-    const map = new Map<string, WorkoutRow[]>();
-    workouts.forEach((w) => {
-      const key = weekStartKey(w.planned_date);
-      const arr = map.get(key) ?? [];
-      arr.push(w);
-      map.set(key, arr);
-    });
+  async function onLogout() {
+    await supabase.auth.signOut();
+    router.push('/aluno/login');
+  }
 
-    // Ordena as semanas (Sem data por último)
-    const keys = Array.from(map.keys()).sort((a, b) => {
-      if (a === 'Sem data') return 1;
-      if (b === 'Sem data') return -1;
-      return a.localeCompare(b);
-    });
-
-    return keys.map((k) => ({
-      key: k,
-      label: formatWeekLabel(k),
-      workouts: (map.get(k) ?? []).slice().sort((a, b) => (a.planned_date ?? '').localeCompare(b.planned_date ?? '')),
-    }));
-  }, [workouts]);
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="opacity-80">Carregando…</div>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <Topbar title="Área do Aluno" />
-      <main className="flex-1 p-4">
-        {loading ? (
-          <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
-        ) : error ? (
-          <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-4 text-sm text-red-700 dark:text-red-300">
-            {error}
-          </div>
-        ) : (
-          <>
-            <div className="mb-4 rounded-2xl bg-white dark:bg-surface-dark p-4 shadow">
-              <div className="text-sm text-slate-600 dark:text-slate-300">Aluno</div>
-              <div className="text-xl font-semibold">{student?.name}</div>
-              <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                <span className="font-medium">Ritmo P1k:</span> {student?.p1k_pace ?? '—'}
-              </div>
-              <div className="mt-3">
-                <button
-                  className="text-sm underline text-slate-600 dark:text-slate-300"
-                  onClick={async () => {
-                    await supabase.auth.signOut();
-                    router.replace('/login');
-                  }}
-                >
-                  Sair
-                </button>
-              </div>
+    <div className="p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-sm opacity-70">Aluno</div>
+          <div className="text-2xl font-extrabold leading-tight">{student?.name || '—'}</div>
+          {week ? (
+            <div className="mt-2 opacity-80">
+              Semana: <b>{week.label || `${formatBRShort(week.week_start)} – ${week.week_end ? formatBRShort(week.week_end) : '—'}`}</b>
             </div>
+          ) : (
+            <div className="mt-2 opacity-80">Nenhuma semana encontrada.</div>
+          )}
+        </div>
 
-            {grouped.length === 0 ? (
-              <div className="text-sm text-slate-600 dark:text-slate-300">Nenhum treino disponível.</div>
-            ) : (
-              <div className="space-y-4">
-                {grouped.map((g) => (
-                  <section key={g.key} className="rounded-2xl bg-white dark:bg-surface-dark p-4 shadow">
-                    <h3 className="font-semibold mb-3">{g.label}</h3>
+        <button onClick={onLogout} className="underline opacity-80 hover:opacity-100">
+          Sair
+        </button>
+      </div>
 
-                    <div className="space-y-3">
-                      {g.workouts.map((w) => {
-                        const latest = latestExecByWorkout[w.id];
-                        const done = latest?.status === 'completed';
-                        const url =
-                          student?.public_slug && w.share_slug ? `/w/${student.public_slug}/${w.share_slug}` : null;
+      {msg ? (
+        <div className="mt-4 rounded-2xl bg-amber-500/20 border border-amber-400/30 px-4 py-3 text-amber-100">
+          {msg}
+        </div>
+      ) : null}
 
-                        return (
-                          <div
-                            key={w.id}
-                            className="rounded-xl border border-slate-200 dark:border-slate-700 p-3 flex items-start justify-between gap-3"
-                          >
-                            <div className="min-w-0">
-                              <div className="text-sm text-slate-600 dark:text-slate-300">
-                                {w.planned_date ? formatDateBR(w.planned_date) : 'Sem data'} ·{' '}
-                                {TEMPLATE_LABEL[w.template_type] ?? w.template_type} · {w.total_km} km
-                              </div>
-                              <div className="font-medium truncate">
-                                {w.title || TEMPLATE_LABEL[w.template_type] || 'Treino'}
-                              </div>
+      <div className="mt-6">
+        <div className="text-xl font-extrabold">Treinos da semana</div>
 
-                              {done ? (
-                                <div className="mt-1 text-xs text-green-700 dark:text-green-300">
-                                  Feito{latest?.performed_at ? ` em ${formatDateBR(latest.performed_at)}` : ''}
-                                  {latest?.rpe ? ` · RPE ${latest.rpe}` : ''}
-                                </div>
-                              ) : latest?.status === 'in_progress' ? (
-                                <div className="mt-1 text-xs text-amber-700 dark:text-amber-300">Em andamento</div>
-                              ) : (
-                                <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">Pendente</div>
-                              )}
-                            </div>
+        <div className="mt-4 space-y-4">
+          {workouts.length === 0 ? (
+            <div className="opacity-70">Nenhum treino publicado nesta semana.</div>
+          ) : (
+            workouts.map((w) => {
+              const planned = w.planned_date ? `${weekdayShortPT(w.planned_date)}, ${formatBRShort(w.planned_date)}` : '—';
+              const tpl = templateLabelPT(w.template_type);
+              const km = (w.total_km ?? 0).toFixed(1).replace('.', ',');
 
-                            <div className="shrink-0">
-                              <button
-                                className="px-3 py-2 rounded-lg bg-primary text-slate-900 font-semibold text-sm disabled:opacity-50"
-                                disabled={!url}
-                                onClick={() => url && router.push(url)}
-                              >
-                                Abrir
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </main>
-    </>
+              return (
+                <div key={w.id} className="rounded-3xl bg-white/5 border border-white/10 p-4">
+                  <div className="flex flex-wrap items-center gap-2 opacity-90">
+                    <span className="font-semibold">{planned}</span>
+                    <span className="opacity-60">•</span>
+                    <span>{w.execution_label || (w.status === 'canceled' ? 'Cancelado' : w.status === 'ready' ? 'Publicado' : w.status === 'draft' ? 'Rascunho' : w.status)}</span>
+                  </div>
+
+                  <div className="mt-1 flex flex-wrap items-center gap-2 opacity-85">
+                    <span>{tpl}</span>
+                    <span className="opacity-60">•</span>
+                    <span>
+                      Total: <b>{km} km</b>
+                    </span>
+                  </div>
+
+                  <div className="mt-3 text-2xl font-extrabold leading-snug break-words">
+                    {w.title || 'Treino'}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <Link
+                      href={student?.public_slug ? `/p/${student.public_slug}/workouts/${w.id}` : '#'}
+                      className="rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 px-5 py-3 font-extrabold"
+                    >
+                      Abrir treino
+                    </Link>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

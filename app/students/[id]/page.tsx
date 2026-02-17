@@ -13,6 +13,9 @@ type StudentRow = {
   portal_token: string | null;
   portal_enabled: boolean;
   p1k_sec_per_km: number | null;
+
+  // (1) novo campo
+  auth_user_id: string | null;
 };
 
 type WeekRow = {
@@ -149,13 +152,16 @@ export default function StudentDetailPage() {
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [selectedWeekId, setSelectedWeekId] = useState<string>('');
 
-  // Week selector auto-scroll (para abrir já mostrando a semana atual selecionada)
   const weeksBarRef = useRef<HTMLDivElement | null>(null);
   const activeWeekBtnRef = useRef<HTMLButtonElement | null>(null);
   const didInitialWeekScrollRef = useRef(false);
 
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
+
+  // (3) novos states
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteMsg, setInviteMsg] = useState<string | null>(null);
 
   const currentWeekStartISO = useMemo(() => toISODate(mondayOfWeek(new Date())), []);
 
@@ -165,7 +171,8 @@ export default function StudentDetailPage() {
 
     const { data, error } = await supabase
       .from('students')
-      .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
+      // (2) inclui auth_user_id
+      .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km,auth_user_id')
       .eq('id', studentId)
       .single();
 
@@ -205,7 +212,6 @@ export default function StudentDetailPage() {
 
     let tableToUse: 'weeks' | 'training_weeks' = 'weeks';
 
-    // tenta "weeks", se não existir cai pra "training_weeks"
     let up = await upsertWeeks('weeks', rows);
     const msg = String(up.error?.message || '').toLowerCase();
     if (up.error && msg.includes('relation') && msg.includes('weeks')) {
@@ -309,13 +315,59 @@ export default function StudentDetailPage() {
     await loadWorkoutsForWeek(selectedWeekId);
   }
 
+  // (4) shareUrl + sharePortal (copiar/colar conforme você pediu)
+  async function shareUrl(url: string) {
+    const title = student?.name ? `Portal do aluno — ${student.name}` : 'Portal do aluno';
+    const text = student?.name ? `Acesse os treinos do(a) ${student.name} pelo portal.` : 'Acesse os treinos pelo portal.';
+
+    try {
+      // Abre a sheet de compartilhamento no celular (inclui WhatsApp)
+      // @ts-ignore
+      if (typeof navigator !== 'undefined' && (navigator as any).share) {
+        // @ts-ignore
+        await (navigator as any).share({ title, text, url });
+        setBanner('Pronto! Link compartilhado.');
+        return;
+      }
+
+      // Fallback: copia link
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+        setBanner('Link copiado! Cole no WhatsApp para enviar.');
+        return;
+      }
+
+      // Último fallback
+      window.prompt('Copie o link abaixo e envie no WhatsApp:', url);
+      setBanner('Link pronto para copiar.');
+    } catch (e: any) {
+      // Cancelamento do share não é erro
+      const msg = String(e?.message || '').toLowerCase();
+      if (msg.includes('abort') || msg.includes('cancel')) return;
+
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(url);
+          setBanner('Link copiado! Cole no WhatsApp para enviar.');
+        } else {
+          window.prompt('Copie o link abaixo e envie no WhatsApp:', url);
+        }
+      } catch {
+        setBanner('Não foi possível compartilhar automaticamente. Copie o link e envie no WhatsApp.');
+      }
+    }
+  }
+
   async function sharePortal() {
     if (!student) return;
     setBanner(null);
+    setInviteMsg(null);
+
+    const makeUrl = (slug: string, token: string) => `${window.location.origin}/p/${slug}?t=${encodeURIComponent(token)}`;
 
     if (student.portal_enabled && student.portal_token && student.public_slug) {
-      const url = `${window.location.origin}/p/${student.public_slug}?t=${encodeURIComponent(student.portal_token)}`;
-      window.open(url, '_blank', 'noopener,noreferrer');
+      const url = makeUrl(student.public_slug, student.portal_token);
+      await shareUrl(url);
       return;
     }
 
@@ -323,7 +375,8 @@ export default function StudentDetailPage() {
       .from('students')
       .update({ portal_enabled: true })
       .eq('id', student.id)
-      .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km')
+      // (2) inclui auth_user_id aqui também
+      .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km,auth_user_id')
       .single();
 
     if (error) {
@@ -334,8 +387,36 @@ export default function StudentDetailPage() {
     setStudent(data as any);
 
     if ((data as any).portal_token && (data as any).public_slug) {
-      const url = `${window.location.origin}/p/${(data as any).public_slug}?t=${encodeURIComponent((data as any).portal_token)}`;
-      window.open(url, '_blank', 'noopener,noreferrer');
+      const url = makeUrl((data as any).public_slug, (data as any).portal_token);
+      await shareUrl(url);
+    } else {
+      setBanner('Portal habilitado, mas não foi possível gerar o link.');
+    }
+  }
+
+  // (5) inviteStudentAccess
+  async function inviteStudentAccess() {
+    if (!student) return;
+    setInviteMsg(null);
+    setBanner(null);
+
+    if (!student.email) {
+      setInviteMsg('Cadastre o e-mail do aluno antes de enviar o convite.');
+      return;
+    }
+
+    setInviteLoading(true);
+    try {
+      const res = await fetch(`/api/trainer/students/${student.id}/invite`, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+
+      setInviteMsg(json?.message || 'Convite enviado com sucesso!');
+      await loadStudent();
+    } catch (e: any) {
+      setInviteMsg(e?.message || 'Erro ao enviar convite.');
+    } finally {
+      setInviteLoading(false);
     }
   }
 
@@ -374,7 +455,6 @@ export default function StudentDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedWeekId]);
 
-  // Garante que, ao entrar na página, a barra de semanas já esteja posicionada na semana selecionada
   useEffect(() => {
     if (!selectedWeekId) return;
     const bar = weeksBarRef.current;
@@ -385,14 +465,12 @@ export default function StudentDetailPage() {
     const behavior: ScrollBehavior = didInitialWeekScrollRef.current ? 'smooth' : 'auto';
     didInitialWeekScrollRef.current = true;
 
-    // Evita scroll desnecessário se já estiver bem próximo
     const delta = Math.abs(bar.scrollLeft - targetLeft);
     if (delta < 8) return;
 
     try {
       bar.scrollTo({ left: targetLeft, behavior });
     } catch {
-      // fallback antigo
       bar.scrollLeft = targetLeft;
     }
   }, [selectedWeekId, weeks.length]);
@@ -425,7 +503,8 @@ export default function StudentDetailPage() {
             </div>
           </div>
 
-          <div className="mt-3 grid grid-cols-1 sm:grid-cols-4 gap-2">
+          {/* (6) sm:grid-cols-5 + botão Enviar convite */}
+          <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
             <button
               className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
               disabled={!selectedWeekId}
@@ -447,7 +526,7 @@ export default function StudentDetailPage() {
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                sharePortal();
+                void sharePortal();
               }}
             >
               Compartilhar portal
@@ -456,11 +535,29 @@ export default function StudentDetailPage() {
             <button className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold" onClick={openPortalPreview}>
               Ver como aluno (QA)
             </button>
+
+            <button
+              className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
+              disabled={inviteLoading || !student?.email}
+              onClick={inviteStudentAccess}
+              title={
+                !student?.email ? 'Cadastre o e-mail do aluno para enviar o convite' : 'Envia convite por e-mail para o aluno definir a senha'
+              }
+            >
+              {inviteLoading ? 'Enviando convite…' : 'Enviar convite'}
+            </button>
           </div>
         </div>
 
         {banner && (
           <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
+        )}
+
+        {/* (7) mensagem do convite */}
+        {inviteMsg && (
+          <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-3 text-sm text-emerald-800 dark:text-emerald-200">
+            {inviteMsg}
+          </div>
         )}
 
         {loading ? (
@@ -503,7 +600,6 @@ export default function StudentDetailPage() {
                   {weeks.map((w) => {
                     const active = w.id === selectedWeekId;
                     const label = w.label || formatWeekRange(w.week_start, w.week_end);
-                    // botão curto no mobile: "09/02 – 15/02"
                     const short = w.week_start
                       ? `${formatBRShort(w.week_start)} – ${formatBRShort(w.week_end || addDaysISO(w.week_start, 6))}`
                       : label;
@@ -545,7 +641,7 @@ export default function StudentDetailPage() {
               ) : (
                 <div className="mt-3 space-y-3">
                   {workouts.map((w, idx) => {
-                    const ex = latestExecByWorkout[w.id]; // se existe, tem execução
+                    const ex = latestExecByWorkout[w.id];
                     const hasExecution = !!ex;
 
                     const executionLabel = (() => {
@@ -576,9 +672,8 @@ export default function StudentDetailPage() {
 
                     const whenLabel = plannedLabel(w, selectedWeek?.week_start);
 
-                    // regras solicitadas:
-                    const canEdit = !hasExecution && w.status !== 'canceled'; // só edita se NÃO tem execução e NÃO está cancelado
-                    const canPublish = w.status === 'draft' && !hasExecution; // se já está publicado, não mostra Publicar
+                    const canEdit = !hasExecution && w.status !== 'canceled';
+                    const canPublish = w.status === 'draft' && !hasExecution;
 
                     return (
                       <div key={w.id} className="rounded-2xl border border-slate-200 dark:border-slate-800 p-4">
@@ -614,7 +709,7 @@ export default function StudentDetailPage() {
                           {canPublish ? (
                             <button
                               className="px-3 py-2 rounded-lg bg-primary text-slate-900 text-sm font-semibold"
-                              onClick={() => publishWorkout(w.id)}
+                              onClick={() => void publishWorkout(w.id)}
                             >
                               Publicar
                             </button>

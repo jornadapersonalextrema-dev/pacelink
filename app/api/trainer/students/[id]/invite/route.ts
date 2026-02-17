@@ -1,0 +1,62 @@
+import { NextResponse } from 'next/server';
+import { requireTrainer } from '@/lib/authGuard';
+import { createAdminSupabase } from '@/lib/supabaseAdmin';
+
+export async function POST(_: Request, { params }: { params: { id: string } }) {
+  const auth = await requireTrainer();
+  if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
+
+  const studentId = params.id;
+
+  const { data: st, error: stErr } = await auth.supabase
+    .from('students')
+    .select('id,trainer_id,email,auth_user_id,name')
+    .eq('id', studentId)
+    .eq('trainer_id', auth.user.id)
+    .single();
+
+  if (stErr) return NextResponse.json({ error: stErr.message }, { status: 400 });
+  if (!st?.email) return NextResponse.json({ error: 'Aluno sem e-mail cadastrado.' }, { status: 400 });
+
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
+  const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
+
+  // Se já estiver vinculado, não re-invita (evita duplicidade)
+  if (st.auth_user_id) {
+    return NextResponse.json({
+      ok: true,
+      alreadyLinked: true,
+      message:
+        'Este aluno já possui login vinculado. Se precisar, use “Esqueci minha senha” em /aluno/login para redefinir.',
+    });
+  }
+
+  const admin = createAdminSupabase();
+  const { data, error } = await admin.auth.admin.inviteUserByEmail(st.email, { redirectTo });
+
+  if (error) {
+    return NextResponse.json(
+      {
+        error: error.message,
+        hint:
+          'Se o aluno já tiver conta no Auth, use “Esqueci minha senha” em /aluno/login. Se quiser, posso criar um endpoint admin para vincular por e-mail.',
+      },
+      { status: 400 }
+    );
+  }
+
+  const invitedId = data?.user?.id;
+  if (!invitedId) {
+    return NextResponse.json({ error: 'Convite enviado, mas não foi possível obter user.id.' }, { status: 500 });
+  }
+
+  const { error: upErr } = await auth.supabase
+    .from('students')
+    .update({ auth_user_id: invitedId })
+    .eq('id', studentId)
+    .eq('trainer_id', auth.user.id);
+
+  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 400 });
+
+  return NextResponse.json({ ok: true, invited: true, auth_user_id: invitedId, message: 'Convite enviado com sucesso!' });
+}
