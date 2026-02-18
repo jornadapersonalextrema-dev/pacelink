@@ -1,238 +1,210 @@
-import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { NextResponse, type NextRequest } from 'next/server';
+import { createAdminSupabase } from '@/lib/supabaseAdmin';
 
-export const runtime = 'nodejs';
-
-function mustEnv(name: string) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
-}
-
-const supabase = createClient(mustEnv('SUPABASE_URL'), mustEnv('SUPABASE_SERVICE_ROLE_KEY'), {
-  auth: { persistSession: false },
-});
-
-type Student = {
-  id: string;
-  name: string;
-  trainer_id: string | null;
-  public_slug: string | null;
-  portal_token: string | null;
-  portal_enabled: boolean;
-};
-
-function pad2(n: number) {
-  return String(n).padStart(2, '0');
-}
-
-function isoFromParts(y: number, m: number, d: number) {
-  return `${y}-${pad2(m)}-${pad2(d)}`;
-}
-
-function getSaoPauloISODate(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Sao_Paulo',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(date);
-
-  const y = Number(parts.find((p) => p.type === 'year')?.value || 1970);
-  const m = Number(parts.find((p) => p.type === 'month')?.value || 1);
-  const d = Number(parts.find((p) => p.type === 'day')?.value || 1);
-  return isoFromParts(y, m, d);
-}
-
-function getSaoPauloWeekdayIndex(date = new Date()) {
-  // Monday=1 ... Sunday=7
-  const wd = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Sao_Paulo',
-    weekday: 'short',
-  }).format(date);
-
-  const map: Record<string, number> = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
-  return map[wd] || 1;
-}
-
-function addDaysISO(iso: string, days: number) {
-  const [y, m, d] = iso.split('-').map((x) => Number(x));
-  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
-  dt.setUTCDate(dt.getUTCDate() + days);
-  return isoFromParts(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
-}
-
-function startOfWeekMondayISO_SaoPaulo(now = new Date()) {
-  const todayISO = getSaoPauloISODate(now);
-  const dow = getSaoPauloWeekdayIndex(now); // 1..7
-  return addDaysISO(todayISO, -(dow - 1));
-}
-
-function formatBRShort(iso: string) {
-  const [y, m, d] = iso.split('-');
-  if (!y || !m || !d) return iso;
+function formatBRShort(iso: string | null | undefined) {
+  if (!iso) return null;
+  const [y, m, d] = String(iso).slice(0, 10).split('-');
+  if (!m || !d) return String(iso).slice(0, 10);
   return `${d}/${m}`;
 }
 
-function formatWeekLabel(weekStartISO: string, weekEndISO: string) {
-  return `Semana ${formatBRShort(weekStartISO)} – ${formatBRShort(weekEndISO)}`;
-}
-
-const STATUS_LABEL: Record<string, string> = {
-  draft: 'Rascunho',
-  ready: 'Disponível',
-  archived: 'Encerrado',
-  canceled: 'Cancelado',
-};
-
-function statusLabel(status: any) {
-  const s = String(status || '').trim();
-  return STATUS_LABEL[s] || (s ? s : '—');
-}
-
-function progressLabel(workoutStatus: any, latestExecution: any) {
-  const st = String(workoutStatus || '').trim();
-
-  if (st === 'canceled') return 'Cancelado';
-
-  const exStatus = String(latestExecution?.status || '').trim();
-  if (exStatus === 'completed') {
-    const dt = latestExecution?.performed_at || latestExecution?.completed_at || null;
-    if (dt) return `Concluído (${formatBRShort(String(dt))})`;
-    return 'Concluído';
+function pickExecutionLabel(ex: any) {
+  if (!ex) return null;
+  if (ex.status === 'completed') {
+    const dt = ex.performed_at || ex.completed_at || null;
+    const br = formatBRShort(dt);
+    return br ? `Concluído (${br})` : 'Concluído';
   }
-  if (exStatus === 'in_progress' || exStatus === 'running' || exStatus === 'paused') return 'Em andamento';
-
-  return '—';
+  if (ex.status === 'paused') return 'Pausado';
+  if (ex.status === 'running') return 'Em andamento';
+  return null;
 }
 
-export async function GET(req: Request) {
-  try {
-    const url = new URL(req.url);
-    const slug = (url.searchParams.get('slug') || '').trim();
-    const t = (url.searchParams.get('t') || '').trim();
+async function selectLatestWeek(admin: any, studentId: string) {
+  // tenta training_weeks, senão weeks
+  let wk = await admin
+    .from('training_weeks')
+    .select('id,week_start,week_end,label')
+    .eq('student_id', studentId)
+    .order('week_start', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    if (!slug || !t) {
-      return NextResponse.json({ ok: false, error: 'Parâmetros ausentes (slug, t).' }, { status: 400 });
-    }
-
-    const { data: student, error: sErr } = await supabase
-      .from('students')
-      .select('id,name,trainer_id,public_slug,portal_token,portal_enabled')
-      .eq('public_slug', slug)
-      .maybeSingle();
-
-    if (sErr) return NextResponse.json({ ok: false, error: sErr.message }, { status: 500 });
-    if (!student) return NextResponse.json({ ok: false, error: 'Aluno não encontrado.' }, { status: 404 });
-
-    const st = student as Student;
-    if (!st.portal_enabled) return NextResponse.json({ ok: false, error: 'Portal desabilitado.' }, { status: 403 });
-    if (!st.portal_token || st.portal_token !== t) return NextResponse.json({ ok: false, error: 'Acesso inválido.' }, { status: 403 });
-    if (!st.trainer_id) return NextResponse.json({ ok: false, error: 'Aluno sem treinador associado.' }, { status: 400 });
-
-    // Semana atual (SEG -> DOM) em America/Sao_Paulo
-    const week_start = startOfWeekMondayISO_SaoPaulo(new Date());
-    const week_end = addDaysISO(week_start, 6); // domingo
-    const label = formatWeekLabel(week_start, week_end);
-
-    // Garante que a semana existe (unique: student_id + week_start)
-    const up = await supabase
-      .from('training_weeks')
-      .upsert(
-        [{ student_id: st.id, trainer_id: st.trainer_id, week_start, week_end, label }],
-        { onConflict: 'student_id,week_start' }
-      );
-
-    if (up.error) return NextResponse.json({ ok: false, error: up.error.message }, { status: 500 });
-
-    // Busca semana
-    const { data: wk, error: wkErr } = await supabase
-      .from('training_weeks')
+  const msg = String(wk.error?.message || '').toLowerCase();
+  if (wk.error && msg.includes('relation') && msg.includes('training_weeks')) {
+    wk = await admin
+      .from('weeks')
       .select('id,week_start,week_end,label')
-      .eq('student_id', st.id)
-      .eq('week_start', week_start)
+      .eq('student_id', studentId)
+      .order('week_start', { ascending: false })
+      .limit(1)
       .maybeSingle();
+  }
 
-    if (wkErr) return NextResponse.json({ ok: false, error: wkErr.message }, { status: 500 });
-    if (!wk) return NextResponse.json({ ok: false, error: 'Semana não encontrada.' }, { status: 500 });
+  return wk;
+}
 
-    const weekRow = wk as any;
+async function selectWeekById(admin: any, studentId: string, weekId: string) {
+  let wk = await admin
+    .from('training_weeks')
+    .select('id,week_start,week_end,label')
+    .eq('id', weekId)
+    .eq('student_id', studentId)
+    .maybeSingle();
 
-    // Treinos desta semana (aluno vê somente published/encerrados/cancelados, nunca "draft")
-    const { data: ws, error: wErr } = await supabase
-      .from('workouts')
-      .select('id,title,template_type,total_km,planned_date,planned_day,status,locked_at,week_id,created_at')
-      .eq('student_id', st.id)
-      .eq('week_id', weekRow.id)
-      .in('status', ['ready', 'archived', 'canceled'])
-      .order('planned_day', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true });
+  const msg = String(wk.error?.message || '').toLowerCase();
+  if (wk.error && msg.includes('relation') && msg.includes('training_weeks')) {
+    wk = await admin
+      .from('weeks')
+      .select('id,week_start,week_end,label')
+      .eq('id', weekId)
+      .eq('student_id', studentId)
+      .maybeSingle();
+  }
 
-    if (wErr) return NextResponse.json({ ok: false, error: wErr.message }, { status: 500 });
+  return wk;
+}
 
-    const workouts = (ws || []) as any[];
-    const ids = workouts.map((w) => w.id);
+export async function GET(req: NextRequest) {
+  const admin = createAdminSupabase();
+  const url = new URL(req.url);
 
-    // Última execução por treino (se existir)
-    let latestByWorkout: Record<string, any> = {};
-    if (ids.length > 0) {
-      const { data: ex } = await supabase
-        .from('executions')
-        .select(
-          'id,workout_id,status,started_at,last_event_at,completed_at,performed_at,total_elapsed_ms,rpe,comment,actual_total_km'
-        )
-        .in('workout_id', ids)
-        .order('last_event_at', { ascending: false, nullsFirst: false });
+  const slug = (url.searchParams.get('slug') || '').trim();
+  const t = (url.searchParams.get('t') || '').trim();
+  const weekIdParam = (url.searchParams.get('weekId') || '').trim();
+  const studentIdParam = (url.searchParams.get('studentId') || '').trim();
 
-      for (const wid of ids) latestByWorkout[wid] = null;
+  let student: any = null;
 
-      for (const e of (ex || []) as any[]) {
-        if (!latestByWorkout[e.workout_id]) latestByWorkout[e.workout_id] = e;
-      }
+  // (A) modo portal compartilhável (slug + t)
+  if (slug && t) {
+    const { data, error } = await admin
+      .from('students')
+      .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
+      .eq('public_slug', slug)
+      .eq('portal_token', t)
+      .eq('portal_enabled', true)
+      .single();
+
+    if (error || !data) {
+      return NextResponse.json({ error: error?.message || 'Link inválido.' }, { status: 400 });
+    }
+    student = data;
+  } else {
+    // (B) modo aluno logado via Authorization Bearer
+    const authHeader = req.headers.get('authorization') || '';
+    const jwt = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
+
+    if (!jwt) {
+      return NextResponse.json({ error: 'Parâmetros ausentes (slug, t) e sem Authorization Bearer.' }, { status: 400 });
     }
 
-    // Ordena para deixar "Cancelado" no final (sem mexer no banco)
-    const rank = (s: any) => {
-      const st = String(s || '');
-      if (st === 'canceled') return 2;
-      if (st === 'archived') return 1;
-      return 0; // ready
-    };
-    workouts.sort((a, b) => {
-      const ra = rank(a.status);
-      const rb = rank(b.status);
-      if (ra !== rb) return ra - rb;
-      const pa = a.planned_day == null ? 999 : Number(a.planned_day);
-      const pb = b.planned_day == null ? 999 : Number(b.planned_day);
-      if (pa !== pb) return pa - pb;
-      const ca = String(a.created_at || '');
-      const cb = String(b.created_at || '');
-      return ca.localeCompare(cb);
-    });
+    const { data: u, error: uErr } = await admin.auth.getUser(jwt);
+    if (uErr || !u?.user) {
+      return NextResponse.json({ error: 'Sessão inválida. Faça login novamente.' }, { status: 401 });
+    }
 
-    const ready = workouts.filter((w) => w.status === 'ready').length;
-    const canceled = workouts.filter((w) => w.status === 'canceled').length;
-    const completed = workouts.filter((w) => latestByWorkout[w.id]?.status === 'completed').length;
-    const pending = Math.max(0, ready - completed);
+    const uid = u.user.id;
+    const email = (u.user.email || '').toLowerCase().trim();
 
-    const workouts_out = workouts.map((w) => {
-      const ex = latestByWorkout[w.id];
-      return {
-        ...w,
-        status_label: statusLabel(w.status),
-        portal_progress_label: progressLabel(w.status, ex),
-      };
-    });
+    if (studentIdParam) {
+      const { data, error } = await admin
+        .from('students')
+        .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
+        .eq('id', studentIdParam)
+        .single();
 
-    return NextResponse.json({
-      ok: true,
-      student: { id: st.id, name: st.name, public_slug: st.public_slug },
-      week: { id: weekRow.id, week_start, week_end, label: weekRow.label || label },
-      counts: { planned: workouts.length, ready, completed, pending, canceled },
-      workouts: workouts_out,
-      latest_execution_by_workout: latestByWorkout,
-    });
-  } catch (e: any) {
-    return NextResponse.json({ ok: false, error: e?.message || 'Erro inesperado.' }, { status: 500 });
+      if (error || !data) return NextResponse.json({ error: error?.message || 'Aluno não encontrado.' }, { status: 404 });
+
+      if (data.auth_user_id && data.auth_user_id !== uid) {
+        return NextResponse.json({ error: 'Acesso negado.' }, { status: 403 });
+      }
+      if (!data.auth_user_id && email && String(data.email || '').toLowerCase().trim() !== email) {
+        return NextResponse.json({ error: 'Acesso negado.' }, { status: 403 });
+      }
+
+      student = data;
+    } else {
+      // tenta por auth_user_id; fallback por email (legado)
+      let q = await admin
+        .from('students')
+        .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
+        .eq('auth_user_id', uid)
+        .maybeSingle();
+
+      if (!q.data && email) {
+        q = await admin
+          .from('students')
+          .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
+          .eq('email', email)
+          .maybeSingle();
+      }
+
+      if (q.error || !q.data) {
+        return NextResponse.json({ error: q.error?.message || 'Aluno não vinculado a este login.' }, { status: 404 });
+      }
+
+      student = q.data;
+    }
   }
+
+  // Semana
+  const weekRes = weekIdParam
+    ? await selectWeekById(admin, student.id, weekIdParam)
+    : await selectLatestWeek(admin, student.id);
+
+  if (weekRes.error) {
+    return NextResponse.json({ error: weekRes.error.message }, { status: 400 });
+  }
+
+  const week = weekRes.data || null;
+
+  // Treinos
+  let workouts: any[] = [];
+  if (week?.id) {
+    const { data: ws, error: woErr } = await admin
+      .from('workouts')
+      .select('id,title,template_type,status,total_km,planned_date,week_id')
+      .eq('week_id', week.id)
+      .in('status', ['ready', 'canceled'])
+      .order('planned_date', { ascending: true, nullsFirst: false });
+
+    if (woErr) return NextResponse.json({ error: woErr.message }, { status: 400 });
+    workouts = ws || [];
+
+    if (workouts.length) {
+      const ids = workouts.map((w) => w.id);
+
+      const { data: exs, error: exErr } = await admin
+        .from('executions')
+        .select('id,workout_id,status,performed_at,completed_at,last_event_at')
+        .in('workout_id', ids)
+        .order('last_event_at', { ascending: false });
+
+      if (exErr) return NextResponse.json({ error: exErr.message }, { status: 400 });
+
+      const byWorkout: Record<string, any> = {};
+      for (const ex of exs || []) {
+        if (!byWorkout[ex.workout_id]) byWorkout[ex.workout_id] = ex;
+      }
+
+      workouts = workouts.map((w) => ({
+        ...w,
+        execution_label: pickExecutionLabel(byWorkout[w.id] || null),
+      }));
+    }
+  }
+
+  return NextResponse.json({
+    ok: true,
+    student: {
+      id: student.id,
+      name: student.name,
+      email: student.email,
+      public_slug: student.public_slug || null,
+      portal_token: student.portal_token || null,
+    },
+    week,
+    workouts,
+  });
 }

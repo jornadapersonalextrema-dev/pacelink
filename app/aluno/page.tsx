@@ -9,7 +9,8 @@ type StudentRow = {
   id: string;
   name: string;
   email: string | null;
-  public_slug: string;
+  public_slug: string | null;
+  portal_token: string | null;
 };
 
 type WeekRow = {
@@ -51,6 +52,11 @@ function templateLabelPT(tpl: string | null | undefined) {
   return tpl || 'Treino';
 }
 
+function isAbortLikeError(e: any) {
+  const msg = String(e?.message || '').toLowerCase();
+  return e?.name === 'AbortError' || msg.includes('aborted') || msg.includes('abort');
+}
+
 export default function AlunoHomePage() {
   const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
@@ -62,52 +68,52 @@ export default function AlunoHomePage() {
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       setLoading(true);
       setMsg(null);
 
       try {
-        const { data: userData } = await supabase.auth.getUser();
-        if (!userData.user) {
+        const { data: sessionData, error: sessErr } = await supabase.auth.getSession();
+        if (sessErr) throw sessErr;
+
+        const session = sessionData?.session;
+        if (!session?.user) {
           router.push('/aluno/login');
           return;
         }
 
-        const { data: st, error: stErr } = await supabase
-          .from('students')
-          .select('id,name,email,public_slug')
-          .eq('auth_user_id', userData.user.id)
-          .single();
+        const token = session.access_token;
 
-        if (stErr) throw stErr;
-        setStudent(st as any);
+        // ✅ Agora o summary funciona no modo "aluno logado" via Bearer token
+        const res = await fetch('/api/portal/summary', {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${token}` },
+        });
 
-        const { data: wk, error: wkErr } = await supabase
-          .from('training_weeks')
-          .select('id,week_start,week_end,label')
-          .eq('student_id', st.id)
-          .order('week_start', { ascending: false })
-          .limit(1)
-          .maybeSingle();
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json?.error || `Falha ao carregar portal (HTTP ${res.status})`);
 
-        if (wkErr) throw wkErr;
-        setWeek(wk as any);
+        if (!alive) return;
 
-        if (wk?.id) {
-          const qs = new URLSearchParams({ studentId: st.id, weekId: wk.id }).toString();
-          const res = await fetch(`/api/portal/summary?${qs}`, { cache: 'no-store' });
-          const json = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(json?.error || `Falha ao carregar treinos (HTTP ${res.status})`);
-          setWorkouts(json?.workouts ?? []);
-        } else {
-          setWorkouts([]);
-        }
+        setStudent(json?.student ?? null);
+        setWeek(json?.week ?? null);
+        setWorkouts(json?.workouts ?? []);
       } catch (e: any) {
-        setMsg(e?.message || 'Erro ao carregar o portal.');
+        if (!alive) return;
+        if (!isAbortLikeError(e)) {
+          setMsg(e?.message || 'Erro ao carregar o portal.');
+        }
       } finally {
+        if (!alive) return;
         setLoading(false);
       }
     })();
+
+    return () => {
+      alive = false;
+    };
   }, [router, supabase]);
 
   async function onLogout() {
@@ -129,9 +135,14 @@ export default function AlunoHomePage() {
         <div>
           <div className="text-sm opacity-70">Aluno</div>
           <div className="text-2xl font-extrabold leading-tight">{student?.name || '—'}</div>
+
           {week ? (
             <div className="mt-2 opacity-80">
-              Semana: <b>{week.label || `${formatBRShort(week.week_start)} – ${week.week_end ? formatBRShort(week.week_end) : '—'}`}</b>
+              Semana:{' '}
+              <b>
+                {week.label ||
+                  `${formatBRShort(week.week_start)} – ${week.week_end ? formatBRShort(week.week_end) : '—'}`}
+              </b>
             </div>
           ) : (
             <div className="mt-2 opacity-80">Nenhuma semana encontrada.</div>
@@ -161,12 +172,25 @@ export default function AlunoHomePage() {
               const tpl = templateLabelPT(w.template_type);
               const km = (w.total_km ?? 0).toFixed(1).replace('.', ',');
 
+              const t = student?.portal_token ? `?t=${encodeURIComponent(student.portal_token)}` : '';
+              const href =
+                student?.public_slug ? `/p/${student.public_slug}/workouts/${w.id}${t}` : '#';
+
               return (
                 <div key={w.id} className="rounded-3xl bg-white/5 border border-white/10 p-4">
                   <div className="flex flex-wrap items-center gap-2 opacity-90">
                     <span className="font-semibold">{planned}</span>
                     <span className="opacity-60">•</span>
-                    <span>{w.execution_label || (w.status === 'canceled' ? 'Cancelado' : w.status === 'ready' ? 'Publicado' : w.status === 'draft' ? 'Rascunho' : w.status)}</span>
+                    <span>
+                      {w.execution_label ||
+                        (w.status === 'canceled'
+                          ? 'Cancelado'
+                          : w.status === 'ready'
+                          ? 'Publicado'
+                          : w.status === 'draft'
+                          ? 'Rascunho'
+                          : w.status)}
+                    </span>
                   </div>
 
                   <div className="mt-1 flex flex-wrap items-center gap-2 opacity-85">
@@ -183,7 +207,7 @@ export default function AlunoHomePage() {
 
                   <div className="mt-4 flex flex-wrap gap-3">
                     <Link
-                      href={student?.public_slug ? `/p/${student.public_slug}/workouts/${w.id}` : '#'}
+                      href={href}
                       className="rounded-2xl bg-emerald-400 hover:bg-emerald-300 text-slate-950 px-5 py-3 font-extrabold"
                     >
                       Abrir treino
