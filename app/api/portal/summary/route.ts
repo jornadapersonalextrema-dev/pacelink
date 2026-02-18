@@ -1,34 +1,63 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createAdminSupabase } from '@/lib/supabaseAdmin';
 
-function formatBRShort(iso: string | null | undefined) {
-  if (!iso) return null;
-  const [y, m, d] = String(iso).slice(0, 10).split('-');
-  if (!m || !d) return String(iso).slice(0, 10);
-  return `${d}/${m}`;
+export const dynamic = 'force-dynamic';
+
+type WeekRow = {
+  id: string;
+  week_start: string;
+  week_end: string | null;
+  label: string | null;
+};
+
+function isoAddDays(iso: string, days: number) {
+  const [y, m, d] = iso.split('-').map((x) => Number(x));
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
 }
 
-function pickExecutionLabel(ex: any) {
-  if (!ex) return null;
-  if (ex.status === 'completed') {
-    const dt = ex.performed_at || ex.completed_at || null;
-    const br = formatBRShort(dt);
-    return br ? `Concluído (${br})` : 'Concluído';
+function chooseDefaultWeek(weeks: WeekRow[], todayISO: string) {
+  if (!weeks.length) return null;
+
+  // 1) Semana atual (today entre start e end)
+  for (const w of weeks) {
+    const start = String(w.week_start || '');
+    if (!start) continue;
+    const end = String(w.week_end || '') || isoAddDays(start, 6);
+    if (todayISO >= start && todayISO <= end) return w;
   }
-  if (ex.status === 'paused') return 'Pausado';
-  if (ex.status === 'running') return 'Em andamento';
-  return null;
+
+  // 2) Última semana passada
+  let lastPast: WeekRow | null = null;
+  for (const w of weeks) {
+    const start = String(w.week_start || '');
+    if (!start) continue;
+    const end = String(w.week_end || '') || isoAddDays(start, 6);
+    if (end < todayISO) lastPast = w; // weeks vem ordenado asc
+  }
+  if (lastPast) return lastPast;
+
+  // 3) Primeira semana futura
+  for (const w of weeks) {
+    const start = String(w.week_start || '');
+    if (!start) continue;
+    if (start > todayISO) return w;
+  }
+
+  return weeks[weeks.length - 1];
 }
 
-async function selectLatestWeek(admin: any, studentId: string) {
+async function selectWeeksForStudent(admin: any, studentId: string) {
   // tenta training_weeks, senão weeks
   let wk = await admin
     .from('training_weeks')
     .select('id,week_start,week_end,label')
     .eq('student_id', studentId)
-    .order('week_start', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order('week_start', { ascending: true });
 
   const msg = String(wk.error?.message || '').toLowerCase();
   if (wk.error && msg.includes('relation') && msg.includes('training_weeks')) {
@@ -36,33 +65,46 @@ async function selectLatestWeek(admin: any, studentId: string) {
       .from('weeks')
       .select('id,week_start,week_end,label')
       .eq('student_id', studentId)
-      .order('week_start', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order('week_start', { ascending: true });
   }
 
   return wk;
 }
 
-async function selectWeekById(admin: any, studentId: string, weekId: string) {
-  let wk = await admin
-    .from('training_weeks')
-    .select('id,week_start,week_end,label')
-    .eq('id', weekId)
-    .eq('student_id', studentId)
-    .maybeSingle();
+async function selectExecutionsLatest(admin: any, workoutIds: string[]) {
+  if (!workoutIds.length) return { latest: {} as Record<string, any>, error: null as any };
 
-  const msg = String(wk.error?.message || '').toLowerCase();
-  if (wk.error && msg.includes('relation') && msg.includes('training_weeks')) {
-    wk = await admin
-      .from('weeks')
-      .select('id,week_start,week_end,label')
-      .eq('id', weekId)
-      .eq('student_id', studentId)
-      .maybeSingle();
+  // tenta com actual_total_km; se não existir, cai para seleção básica
+  let res = await admin
+    .from('executions')
+    .select('id,workout_id,status,performed_at,completed_at,last_event_at,actual_total_km')
+    .in('workout_id', workoutIds)
+    .order('last_event_at', { ascending: false });
+
+  const msg = String(res.error?.message || '').toLowerCase();
+  if (res.error && msg.includes('column') && msg.includes('actual_total_km')) {
+    res = await admin
+      .from('executions')
+      .select('id,workout_id,status,performed_at,completed_at,last_event_at')
+      .in('workout_id', workoutIds)
+      .order('last_event_at', { ascending: false });
   }
 
-  return wk;
+  // se tabela não existir, não quebra o portal
+  const msg2 = String(res.error?.message || '').toLowerCase();
+  if (res.error && msg2.includes('relation') && msg2.includes('executions')) {
+    return { latest: {} as Record<string, any>, error: null as any };
+  }
+
+  if (res.error) return { latest: {} as Record<string, any>, error: res.error };
+
+  const latest: Record<string, any> = {};
+  for (const ex of res.data || []) {
+    const wid = String(ex.workout_id || '');
+    if (!wid) continue;
+    if (!latest[wid]) latest[wid] = ex; // como está ordenado desc, 1º é o mais recente
+  }
+  return { latest, error: null as any };
 }
 
 export async function GET(req: NextRequest) {
@@ -72,139 +114,138 @@ export async function GET(req: NextRequest) {
   const slug = (url.searchParams.get('slug') || '').trim();
   const t = (url.searchParams.get('t') || '').trim();
   const weekIdParam = (url.searchParams.get('weekId') || '').trim();
-  const studentIdParam = (url.searchParams.get('studentId') || '').trim();
-
-  let student: any = null;
 
   // (A) modo portal compartilhável (slug + t)
+  let student: any = null;
+
   if (slug && t) {
     const { data, error } = await admin
       .from('students')
-      .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
+      .select('id,name,public_slug,portal_token,portal_enabled,auth_user_id')
       .eq('public_slug', slug)
       .eq('portal_token', t)
       .eq('portal_enabled', true)
       .single();
 
     if (error || !data) {
-      return NextResponse.json({ error: error?.message || 'Link inválido.' }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: error?.message || 'Link inválido. Peça ao treinador para reenviar o acesso.' },
+        { status: 400 }
+      );
     }
     student = data;
   } else {
-    // (B) modo aluno logado via Authorization Bearer
+    // (B) modo aluno logado (Authorization: Bearer <access_token>)
     const authHeader = req.headers.get('authorization') || '';
     const jwt = authHeader.toLowerCase().startsWith('bearer ') ? authHeader.slice(7).trim() : '';
 
     if (!jwt) {
-      return NextResponse.json({ error: 'Parâmetros ausentes (slug, t) e sem Authorization Bearer.' }, { status: 400 });
+      return NextResponse.json({ ok: false, error: 'No API key found in request' }, { status: 401 });
     }
 
-    const { data: u, error: uErr } = await admin.auth.getUser(jwt);
-    if (uErr || !u?.user) {
-      return NextResponse.json({ error: 'Sessão inválida. Faça login novamente.' }, { status: 401 });
+    const { data: userRes, error: userErr } = await admin.auth.getUser(jwt);
+    if (userErr || !userRes?.user) {
+      return NextResponse.json({ ok: false, error: userErr?.message || 'Sessão inválida.' }, { status: 401 });
     }
 
-    const uid = u.user.id;
-    const email = (u.user.email || '').toLowerCase().trim();
+    const { data: st, error: stErr } = await admin
+      .from('students')
+      .select('id,name,public_slug,portal_token,portal_enabled,auth_user_id')
+      .eq('auth_user_id', userRes.user.id)
+      .maybeSingle();
 
-    if (studentIdParam) {
-      const { data, error } = await admin
-        .from('students')
-        .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
-        .eq('id', studentIdParam)
-        .single();
+    if (stErr || !st) {
+      return NextResponse.json(
+        { ok: false, error: stErr?.message || 'Aluno não encontrado para este login.' },
+        { status: 400 }
+      );
+    }
 
-      if (error || !data) return NextResponse.json({ error: error?.message || 'Aluno não encontrado.' }, { status: 404 });
+    student = st;
+  }
 
-      if (data.auth_user_id && data.auth_user_id !== uid) {
-        return NextResponse.json({ error: 'Acesso negado.' }, { status: 403 });
-      }
-      if (!data.auth_user_id && email && String(data.email || '').toLowerCase().trim() !== email) {
-        return NextResponse.json({ error: 'Acesso negado.' }, { status: 403 });
-      }
+  // 1) Semanas do aluno
+  const weeksRes = await selectWeeksForStudent(admin, student.id);
+  if (weeksRes.error) {
+    return NextResponse.json({ ok: false, error: weeksRes.error.message }, { status: 400 });
+  }
 
-      student = data;
-    } else {
-      // tenta por auth_user_id; fallback por email (legado)
-      let q = await admin
-        .from('students')
-        .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
-        .eq('auth_user_id', uid)
-        .maybeSingle();
+  const allWeeks = (weeksRes.data || []) as WeekRow[];
 
-      if (!q.data && email) {
-        q = await admin
-          .from('students')
-          .select('id,name,email,public_slug,portal_token,portal_enabled,auth_user_id')
-          .eq('email', email)
-          .maybeSingle();
-      }
+  // 2) Para o aluno: mostrar SOMENTE semanas que têm (ou tiveram) treinos visíveis (ready/canceled)
+  const allWeekIds = allWeeks.map((w) => String(w.id)).filter(Boolean);
+  const weeksWithWorkouts = new Set<string>();
 
-      if (q.error || !q.data) {
-        return NextResponse.json({ error: q.error?.message || 'Aluno não vinculado a este login.' }, { status: 404 });
-      }
+  if (allWeekIds.length) {
+    const { data: ww, error: wwErr } = await admin
+      .from('workouts')
+      .select('week_id,status')
+      .in('week_id', allWeekIds)
+      .in('status', ['ready', 'canceled']);
 
-      student = q.data;
+    if (wwErr) return NextResponse.json({ ok: false, error: wwErr.message }, { status: 400 });
+
+    for (const r of ww || []) {
+      const wid = String(r.week_id || '');
+      if (wid) weeksWithWorkouts.add(wid);
     }
   }
 
-  // Semana
-  const weekRes = weekIdParam
-    ? await selectWeekById(admin, student.id, weekIdParam)
-    : await selectLatestWeek(admin, student.id);
+  const weeks = allWeeks.filter((w) => weeksWithWorkouts.has(String(w.id)));
 
-  if (weekRes.error) {
-    return NextResponse.json({ error: weekRes.error.message }, { status: 400 });
+  // 3) Semana selecionada
+  const todayISO = new Date().toISOString().slice(0, 10);
+
+  let selectedWeek: WeekRow | null = null;
+  if (weekIdParam) {
+    selectedWeek = (weeks.find((w) => String(w.id) === weekIdParam) || null) as any;
+  }
+  if (!selectedWeek) {
+    selectedWeek = chooseDefaultWeek(weeks, todayISO) as any;
   }
 
-  const week = weekRes.data || null;
-
-  // Treinos
+  // 4) Treinos da semana selecionada
   let workouts: any[] = [];
-  if (week?.id) {
+  if (selectedWeek?.id) {
     const { data: ws, error: woErr } = await admin
       .from('workouts')
-      .select('id,title,template_type,status,total_km,planned_date,week_id')
-      .eq('week_id', week.id)
+      .select('id,title,template_type,status,total_km,planned_date,planned_day,week_id')
+      .eq('week_id', selectedWeek.id)
       .in('status', ['ready', 'canceled'])
       .order('planned_date', { ascending: true, nullsFirst: false });
 
-    if (woErr) return NextResponse.json({ error: woErr.message }, { status: 400 });
+    if (woErr) return NextResponse.json({ ok: false, error: woErr.message }, { status: 400 });
     workouts = ws || [];
-
-    if (workouts.length) {
-      const ids = workouts.map((w) => w.id);
-
-      const { data: exs, error: exErr } = await admin
-        .from('executions')
-        .select('id,workout_id,status,performed_at,completed_at,last_event_at')
-        .in('workout_id', ids)
-        .order('last_event_at', { ascending: false });
-
-      if (exErr) return NextResponse.json({ error: exErr.message }, { status: 400 });
-
-      const byWorkout: Record<string, any> = {};
-      for (const ex of exs || []) {
-        if (!byWorkout[ex.workout_id]) byWorkout[ex.workout_id] = ex;
-      }
-
-      workouts = workouts.map((w) => ({
-        ...w,
-        execution_label: pickExecutionLabel(byWorkout[w.id] || null),
-      }));
-    }
   }
+
+  // 5) Última execução por treino
+  const workoutIds = workouts.map((w) => String(w.id)).filter(Boolean);
+  const { latest: latest_execution_by_workout, error: exErr } = await selectExecutionsLatest(admin, workoutIds);
+  if (exErr) return NextResponse.json({ ok: false, error: exErr.message }, { status: 400 });
+
+  // 6) Contadores
+  const planned = workouts.length;
+  const ready = workouts.filter((w) => w.status === 'ready').length;
+  const canceled = workouts.filter((w) => w.status === 'canceled').length;
+  const completed = workouts.filter((w) => {
+    if (w.status !== 'ready') return false;
+    const ex = latest_execution_by_workout[String(w.id)];
+    return ex?.status === 'completed';
+  }).length;
+  const pending = Math.max(0, ready - completed);
 
   return NextResponse.json({
     ok: true,
     student: {
       id: student.id,
       name: student.name,
-      email: student.email,
       public_slug: student.public_slug || null,
       portal_token: student.portal_token || null,
     },
-    week,
+    weeks,
+    week: selectedWeek,
+    counts: { planned, ready, completed, pending, canceled },
     workouts,
+    latest_execution_by_workout,
   });
 }

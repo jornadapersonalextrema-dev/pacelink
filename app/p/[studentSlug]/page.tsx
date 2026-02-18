@@ -3,11 +3,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
+type WeekRow = { id: string; week_start: string; week_end: string | null; label: string | null };
+
 type SummaryResponse = {
   ok: boolean;
   error?: string;
-  student?: { id: string; name: string; public_slug: string | null };
-  week?: { id: string; week_start: string; week_end: string | null; label: string | null };
+  student?: { id: string; name: string; public_slug: string | null; portal_token?: string | null };
+  weeks?: WeekRow[];
+  week?: WeekRow | null;
   counts?: { planned: number; ready: number; completed: number; pending: number; canceled?: number };
   workouts?: any[];
   latest_execution_by_workout?: Record<string, any>;
@@ -54,6 +57,11 @@ function kmLabel(km: number | null) {
   return Number(km).toFixed(1).replace('.', ',');
 }
 
+function weekLabel(w: WeekRow) {
+  const end = w.week_end || addDaysISO(w.week_start, 6);
+  return w.label || `${formatBRShort(w.week_start)} – ${formatBRShort(end)}`;
+}
+
 type DayAgg = {
   day: string; // YYYY-MM-DD
   workouts: any[];
@@ -78,6 +86,8 @@ export default function StudentPortalHomePage() {
   const [banner, setBanner] = useState<string | null>(null);
   const [data, setData] = useState<SummaryResponse | null>(null);
 
+  const [weekId, setWeekId] = useState<string | null>(null);
+
   const token = useMemo(() => t, [t]);
 
   useEffect(() => {
@@ -88,12 +98,12 @@ export default function StudentPortalHomePage() {
       setBanner(null);
 
       try {
-        const res = await fetch(
-          `/api/portal/summary?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(token)}`,
-          { cache: 'no-store' }
-        );
+        let url = `/api/portal/summary?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(token)}`;
+        if (weekId) url += `&weekId=${encodeURIComponent(weekId)}`;
 
+        const res = await fetch(url, { cache: 'no-store' });
         const json = (await res.json()) as SummaryResponse;
+
         if (!alive) return;
 
         if (!json.ok) {
@@ -120,9 +130,10 @@ export default function StudentPortalHomePage() {
     return () => {
       alive = false;
     };
-  }, [studentSlug, token]);
+  }, [studentSlug, token, weekId]);
 
-  const week = data?.week;
+  const week = data?.week || null;
+  const weeks = data?.weeks || [];
   const counts = data?.counts;
   const workouts = data?.workouts || [];
   const latest = data?.latest_execution_by_workout || {};
@@ -176,8 +187,6 @@ export default function StudentPortalHomePage() {
     for (const d of days) {
       d.planned_km = Math.round(d.planned_km * 10) / 10;
       d.actual_km = Math.round(d.actual_km * 10) / 10;
-      // Se existir um campo de ordem, pode ordenar aqui sem quebrar:
-      // d.workouts.sort((a, b) => Number(a.planned_order || 0) - Number(b.planned_order || 0));
     }
 
     return days;
@@ -285,7 +294,6 @@ export default function StudentPortalHomePage() {
   }, [sheetDay]);
 
   function onSheetGrabPointerDown(e: React.PointerEvent) {
-    // apenas botão esquerdo/mão ou toque
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
     dragRef.current.active = true;
@@ -322,13 +330,12 @@ export default function StudentPortalHomePage() {
     if (dragRef.current.pointerId !== e.pointerId) return;
 
     const dy = Math.max(0, dragRef.current.lastY - dragRef.current.startY);
-    const dt = Math.max(1, dragRef.current.lastTime - dragRef.current.startTime); // ms
-    const v = dy / dt; // px/ms
+    const dt = Math.max(1, dragRef.current.lastTime - dragRef.current.startTime);
+    const v = dy / dt;
 
     dragRef.current.active = false;
     dragRef.current.pointerId = -1;
 
-    // thresholds:
     const shouldClose = dy > 160 || (dy > 70 && v > 0.9);
 
     if (shouldClose) {
@@ -336,10 +343,11 @@ export default function StudentPortalHomePage() {
       return;
     }
 
-    // voltar suavemente
     setSheetDragging(false);
     setSheetTranslateY(0);
   }
+
+  const activeWeekId = weekId || week?.id || null;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
@@ -349,8 +357,31 @@ export default function StudentPortalHomePage() {
             <div className="text-xs text-white/60">Portal do Aluno</div>
             <div className="text-xl font-semibold truncate">{data?.student?.name || 'Aluno'}</div>
             <div className="text-sm text-white/70 mt-1">
-              {week ? (week.label || `Semana ${formatBRShort(week.week_start)} – ${formatBRShort(week.week_end)}`) : '—'}
+              {week ? `Semana ${weekLabel(week)}` : '—'}
             </div>
+
+            {weeks.length ? (
+              <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                {weeks.map((w) => {
+                  const isActive = String(w.id) === String(activeWeekId || '');
+                  return (
+                    <button
+                      key={w.id}
+                      onClick={() => setWeekId(String(w.id))}
+                      className={`shrink-0 rounded-full border px-3 py-1 text-xs transition ${
+                        isActive
+                          ? 'bg-white/15 border-white/30 text-white'
+                          : 'bg-white/5 border-white/10 text-white/80 hover:bg-white/10'
+                      }`}
+                      title={`Semana ${weekLabel(w)}`}
+                    >
+                      {weekLabel(w)}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
             {preview ? (
               <div className="mt-1 text-xs text-amber-200">
                 Modo de teste (prévia do treinador): registro de execução desabilitado.
@@ -476,14 +507,8 @@ export default function StudentPortalHomePage() {
       {/* Bottom-sheet (somente quando tiver 2+ treinos no mesmo dia) */}
       {sheetDay ? (
         <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={`Treinos de ${formatBRFull(sheetDay.day)}`}>
-          {/* backdrop */}
-          <button
-            className="absolute inset-0 bg-black/70"
-            aria-label="Fechar"
-            onClick={() => closeSheetAnimated()}
-          />
+          <button className="absolute inset-0 bg-black/70" aria-label="Fechar" onClick={() => closeSheetAnimated()} />
 
-          {/* sheet container */}
           <div className="absolute inset-x-0 bottom-0">
             <div className="mx-auto max-w-3xl px-4 pb-6">
               <div
@@ -493,7 +518,6 @@ export default function StudentPortalHomePage() {
                   transition: sheetDragging ? 'none' : 'transform 200ms ease-out',
                 }}
               >
-                {/* Grabber/drag area (não interfere no scroll da lista) */}
                 <div
                   className="pt-3 pb-2 border-b border-white/10"
                   style={{ touchAction: 'none' }}
@@ -522,7 +546,6 @@ export default function StudentPortalHomePage() {
                   </div>
                 </div>
 
-                {/* content */}
                 <div className="p-4 space-y-3 max-h-[70vh] overflow-auto">
                   {sheetDay.workouts.map((w: any) => {
                     const ex = latest[w.id];
