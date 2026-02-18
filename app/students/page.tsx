@@ -17,6 +17,9 @@ type StudentRow = {
   updated_at: string;
 };
 
+type MissingEmailItem = { id: string; name: string };
+type MissingEmailRow = { id: string; name: string; email: string };
+
 function parsePaceToSeconds(input: string): number | null {
   const v = (input || '').trim().replace(',', ':').replace('.', ':');
   const m = v.match(/^(\d{1,2}):(\d{2})$/);
@@ -34,6 +37,13 @@ function formatPace(seconds?: number | null): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function isValidEmail(email: string): boolean {
+  const v = (email || '').trim();
+  if (!v) return false;
+  // validação simples (suficiente para UI); o Supabase valida novamente no backend
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
 function slugify(s: string) {
@@ -89,6 +99,13 @@ export default function StudentsPage() {
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [inviteLoading, setInviteLoading] = useState(false);
 
+
+  // (2) modal para alunos sem e-mail (usado no “Convidar pendentes”)
+  const [missingEmailOpen, setMissingEmailOpen] = useState(false);
+  const [missingEmailRows, setMissingEmailRows] = useState<MissingEmailRow[]>([]);
+  const [missingEmailSaving, setMissingEmailSaving] = useState(false);
+  const [missingEmailError, setMissingEmailError] = useState<string | null>(null);
+
   async function invitePending() {
     setInviteMsg(null);
     setInviteLoading(true);
@@ -96,7 +113,23 @@ export default function StudentsPage() {
       const res = await fetch('/api/trainer/students/invite-pending', { method: 'POST' });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      setInviteMsg(json?.message || 'Convites processados.');
+
+      const missing: MissingEmailItem[] = Array.isArray(json?.missing_email) ? json.missing_email : [];
+      const errs = Array.isArray(json?.errors) ? json.errors : [];
+
+      const baseMsg = json?.message || 'Convites processados.';
+      const extra = errs.length ? ` • ${errs.length} erro(s)` : '';
+      setInviteMsg(baseMsg + extra);
+
+      if (missing.length > 0) {
+        setMissingEmailRows(missing.map((m) => ({ id: m.id, name: m.name, email: '' })));
+        setMissingEmailError(null);
+        setMissingEmailOpen(true);
+      } else {
+        setMissingEmailOpen(false);
+        setMissingEmailRows([]);
+        setMissingEmailError(null);
+      }
     } catch (e: any) {
       setInviteMsg(e?.message || 'Erro ao convidar pendentes.');
     } finally {
@@ -104,11 +137,85 @@ export default function StudentsPage() {
     }
   }
 
+  async function loadStudents(trId?: string | null) {
+    const tid = trId ?? trainerId;
+    if (!tid) return;
+
+    setError(null);
+    const { data, error } = await supabase
+      .from('students')
+      .select('id, trainer_id, name, email, p1k_sec_per_km, created_at, updated_at')
+      .eq('trainer_id', tid)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    setStudents((data as StudentRow[]) || []);
+  }
+
+  async function patchStudentEmail(studentId: string, emailValue: string) {
+    const res = await fetch(`/api/trainer/students/${studentId}/email`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: emailValue }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+    return (json?.email || emailValue) as string;
+  }
+
+  async function saveMissingEmailsAndContinue() {
+    if (!trainerId) return;
+
+    setMissingEmailError(null);
+
+    const toUpdate = missingEmailRows
+      .map((r) => ({ ...r, email: (r.email || '').trim() }))
+      .filter((r) => r.email.length > 0);
+
+    if (toUpdate.length === 0) {
+      setMissingEmailError('Preencha pelo menos um e-mail (ou clique em Cancelar).');
+      return;
+    }
+
+    for (const r of toUpdate) {
+      if (!isValidEmail(r.email)) {
+        setMissingEmailError(`E-mail inválido para: ${r.name}`);
+        return;
+      }
+    }
+
+    setMissingEmailSaving(true);
+    try {
+      for (const r of toUpdate) {
+        const normalized = r.email.toLowerCase();
+        await patchStudentEmail(r.id, normalized);
+
+        // atualiza lista local imediatamente
+        setStudents((prev) => prev.map((s) => (s.id === r.id ? { ...s, email: normalized } : s)));
+      }
+
+      // chama novamente para enviar convites também para os recém-atualizados
+      await invitePending();
+
+      // se ainda tiver faltando e-mail, mantém o modal aberto com a lista atualizada
+      // (o invitePending já abre/fecha conforme o retorno)
+    } catch (e: any) {
+      setMissingEmailError(e?.message || 'Erro ao salvar e-mails.');
+    } finally {
+      setMissingEmailSaving(false);
+    }
+  }
+
+  function updateMissingEmail(id: string, value: string) {
+    setMissingEmailRows((prev) => prev.map((r) => (r.id === id ? { ...r, email: value } : r)));
+  }
+
   useEffect(() => {
     const boot = async () => {
-      setLoading(true);
       setError(null);
-
       const { data, error: userErr } = await supabase.auth.getUser();
       if (userErr) {
         setError(userErr.message);
@@ -127,24 +234,7 @@ export default function StudentsPage() {
   }, [router, supabase]);
 
   useEffect(() => {
-    const load = async () => {
-      if (!trainerId) return;
-
-      setError(null);
-      const { data, error } = await supabase
-        .from('students')
-        .select('id, trainer_id, name, email, p1k_sec_per_km, created_at, updated_at')
-        .eq('trainer_id', trainerId)
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        setError(error.message);
-        return;
-      }
-      setStudents((data as StudentRow[]) || []);
-    };
-
-    load();
+    loadStudents();
   }, [trainerId, supabase]);
 
   const handleSignOut = async () => {
@@ -177,6 +267,13 @@ export default function StudentsPage() {
       setError('Informe o nome do aluno.');
       return;
     }
+
+    const emailTrim = email.trim();
+    if (emailTrim && !isValidEmail(emailTrim)) {
+      setError('E-mail inválido.');
+      return;
+    }
+
     if (p1kSec == null) {
       setError('P1k inválido. Use o formato mm:ss (ex.: 4:30).');
       return;
@@ -193,7 +290,7 @@ export default function StudentsPage() {
       const payload: any = {
         trainer_id: trainerId,
         name: name.trim(),
-        email: email.trim() ? email.trim() : null,
+        email: emailTrim ? emailTrim.toLowerCase() : null, // ✅ null quando vazio
         p1k_sec_per_km: p1kSec,
 
         public_slug,
@@ -235,9 +332,8 @@ export default function StudentsPage() {
             </div>
           ) : null}
 
-          {/* (2) mostrar mensagem do convite */}
           {inviteMsg && (
-            <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm text-emerald-700 dark:text-emerald-200 mb-4">
+            <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-4 text-sm text-emerald-700 dark:text-emerald-300 mb-4">
               {inviteMsg}
             </div>
           )}
@@ -288,7 +384,7 @@ export default function StudentsPage() {
             {inviteLoading ? 'Enviando convites…' : 'Convidar pendentes'}
           </Button>
 
-          <Button onClick={() => setOpenNew(true)} icon="person_add">
+          <Button onClick={() => { setError(null); setOpenNew(true); }} icon="person_add">
             Novo Aluno
           </Button>
         </div>
@@ -298,6 +394,13 @@ export default function StudentsPage() {
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
           <Card className="w-full max-w-md p-5">
             <div className="text-lg font-black mb-4">Novo Aluno</div>
+
+            {/* ✅ erro visível dentro do modal */}
+            {error && (
+              <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-600 dark:text-red-300 mb-4">
+                {error}
+              </div>
+            )}
 
             <div className="space-y-4">
               <div>
@@ -313,11 +416,19 @@ export default function StudentsPage() {
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">Email (opcional)</label>
                 <input
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full rounded-xl bg-surface-dark border border-white/10 px-4 py-3 text-white outline-none"
                   placeholder="aluno@email.com"
                 />
+                {!email.trim() && (
+                  <div className="text-[11px] text-amber-400 mt-1">
+                    Sem e-mail: não será possível convidar para o Portal ainda.
+                  </div>
+                )}
               </div>
 
               <div>
@@ -339,6 +450,62 @@ export default function StudentsPage() {
                 {saving ? 'Salvando...' : 'Salvar'}
               </Button>
               <button className="w-full text-center text-slate-400 font-bold py-2" onClick={() => setOpenNew(false)}>
+                Cancelar
+              </button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {missingEmailOpen && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+          <Card className="w-full max-w-md p-5">
+            <div className="text-lg font-black mb-1">Faltam e-mails</div>
+            <div className="text-sm text-slate-400 mb-4">
+              Alguns alunos ainda não têm e-mail cadastrado. Sem e-mail não é possível enviar o convite para o Portal.
+            </div>
+
+            {missingEmailError && (
+              <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-600 dark:text-red-300 mb-4">
+                {missingEmailError}
+              </div>
+            )}
+
+            <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
+              {missingEmailRows.map((r) => (
+                <div key={r.id} className="rounded-xl border border-white/10 bg-surface-dark p-3">
+                  <div className="text-sm font-bold text-white">{r.name}</div>
+                  <div className="mt-2">
+                    <input
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      value={r.email}
+                      onChange={(e) => updateMissingEmail(r.id, e.target.value)}
+                      className="w-full rounded-xl bg-surface-dark border border-white/10 px-4 py-3 text-white outline-none"
+                      placeholder="aluno@email.com"
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-1">
+                    Se você não tiver o e-mail agora, pode deixar em branco e cancelar.
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 space-y-3">
+              <Button onClick={saveMissingEmailsAndContinue} disabled={missingEmailSaving || inviteLoading}>
+                {missingEmailSaving ? 'Salvando…' : 'Salvar e enviar convites'}
+              </Button>
+              <button
+                className="w-full text-center text-slate-400 font-bold py-2 disabled:opacity-50"
+                disabled={missingEmailSaving || inviteLoading}
+                onClick={() => {
+                  setMissingEmailOpen(false);
+                  setMissingEmailRows([]);
+                  setMissingEmailError(null);
+                }}
+              >
                 Cancelar
               </button>
             </div>

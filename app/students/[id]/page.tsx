@@ -100,6 +100,13 @@ function formatPace(secPerKm: number | null) {
   return `${m}:${pad2(s)}/km`;
 }
 
+
+function isValidEmail(email: string): boolean {
+  const v = (email || '').trim();
+  if (!v) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+}
+
 function formatKm(v: number | null | undefined) {
   if (v == null) return '—';
   const n = Number(v);
@@ -162,6 +169,12 @@ export default function StudentDetailPage() {
   // (3) novos states
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
+
+  // (4) modal para cadastrar e-mail quando faltar
+  const [emailModalOpen, setEmailModalOpen] = useState(false);
+  const [emailDraft, setEmailDraft] = useState('');
+  const [emailModalSaving, setEmailModalSaving] = useState(false);
+  const [emailModalError, setEmailModalError] = useState<string | null>(null);
 
   const currentWeekStartISO = useMemo(() => toISODate(mondayOfWeek(new Date())), []);
 
@@ -395,12 +408,18 @@ export default function StudentDetailPage() {
   }
 
   // (5) inviteStudentAccess
-  async function inviteStudentAccess() {
+  async function inviteStudentAccess(skipEmailCheck = false) {
     if (!student) return;
     setInviteMsg(null);
     setBanner(null);
 
-    if (!student.email) {
+    const emailTrim = (student.email ?? '').toString().trim();
+    if (!skipEmailCheck && !emailTrim) {
+      openEmailModal('');
+      return;
+    }
+
+    if (!emailTrim) {
       setInviteMsg('Cadastre o e-mail do aluno antes de enviar o convite.');
       return;
     }
@@ -417,6 +436,53 @@ export default function StudentDetailPage() {
       setInviteMsg(e?.message || 'Erro ao enviar convite.');
     } finally {
       setInviteLoading(false);
+    }
+  }
+
+  async function patchStudentEmail(studentId: string, emailValue: string) {
+    const res = await fetch(`/api/trainer/students/${studentId}/email`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: emailValue }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+    return (json?.email || emailValue) as string;
+  }
+
+  function openEmailModal(prefill?: string | null) {
+    setEmailModalError(null);
+    setEmailDraft((prefill || '').toString());
+    setEmailModalOpen(true);
+  }
+
+  async function saveEmailAndInvite() {
+    if (!student) return;
+
+    const v = (emailDraft || '').trim();
+    if (!isValidEmail(v)) {
+      setEmailModalError('E-mail inválido.');
+      return;
+    }
+
+    setEmailModalSaving(true);
+    setEmailModalError(null);
+    try {
+      const normalized = v.toLowerCase();
+      await patchStudentEmail(student.id, normalized);
+
+      // atualiza state local imediatamente
+      setStudent((prev) => (prev ? ({ ...prev, email: normalized } as any) : prev));
+
+      setEmailModalOpen(false);
+
+      // agora envia o convite/reenviar acesso
+      await inviteStudentAccess(true);
+      await loadStudent();
+    } catch (e: any) {
+      setEmailModalError(e?.message || 'Erro ao salvar e-mail.');
+    } finally {
+      setEmailModalSaving(false);
     }
   }
 
@@ -538,13 +604,15 @@ export default function StudentDetailPage() {
 
             <button
               className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
-              disabled={inviteLoading || !student?.email}
+              disabled={inviteLoading}
               onClick={inviteStudentAccess}
               title={
-                !student?.email ? 'Cadastre o e-mail do aluno para enviar o convite' : 'Envia convite por e-mail para o aluno definir a senha'
+                !(student?.email || '').trim()
+                  ? 'Cadastre o e-mail do aluno para enviar o convite'
+                  : 'Envia (ou reenviar) acesso por e-mail para o aluno definir a senha'
               }
             >
-              {inviteLoading ? 'Enviando convite…' : 'Enviar convite'}
+              {inviteLoading ? 'Enviando…' : (student?.email || '').trim() ? 'Enviar/Reenviar acesso' : 'Cadastrar e enviar acesso'}
             </button>
           </div>
         </div>
@@ -559,6 +627,58 @@ export default function StudentDetailPage() {
             {inviteMsg}
           </div>
         )}
+
+
+        {emailModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-md rounded-2xl bg-white dark:bg-surface-dark border border-slate-200/20 p-5">
+              <div className="text-lg font-black mb-1">Cadastrar e-mail do aluno</div>
+              <div className="text-sm text-slate-500 dark:text-slate-300 mb-4">
+                Para enviar o convite e criar a senha de acesso, informe o e-mail do aluno.
+              </div>
+
+              {emailModalError && (
+                <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-200 mb-4">
+                  {emailModalError}
+                </div>
+              )}
+
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">E-mail</label>
+              <input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                value={emailDraft}
+                onChange={(e) => setEmailDraft(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-surface-dark px-4 py-3 text-slate-900 dark:text-white outline-none"
+                placeholder="aluno@email.com"
+              />
+
+              <div className="mt-5 space-y-3">
+                <button
+                  className="w-full px-4 py-3 rounded-xl bg-emerald-600 text-white font-black disabled:opacity-50"
+                  disabled={emailModalSaving}
+                  onClick={saveEmailAndInvite}
+                >
+                  {emailModalSaving ? 'Salvando…' : 'Salvar e enviar acesso'}
+                </button>
+
+                <button
+                  className="w-full text-center text-slate-500 dark:text-slate-300 font-bold py-2 disabled:opacity-50"
+                  disabled={emailModalSaving}
+                  onClick={() => {
+                    setEmailModalOpen(false);
+                    setEmailDraft('');
+                    setEmailModalError(null);
+                  }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
 
         {loading ? (
           <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>

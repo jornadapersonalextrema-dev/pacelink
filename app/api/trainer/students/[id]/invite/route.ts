@@ -6,10 +6,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const auth = await requireTrainer();
   if (!auth.ok) return NextResponse.json({ error: auth.message }, { status: auth.status });
 
-  // Next 16: params pode ser Promise
   const { id: studentId } = await params;
 
-  // ⚠️ auth.supabase agora pode ser Promise (depois do createServerSupabase async)
   const supabase = await Promise.resolve(auth.supabase as any);
 
   const { data: st, error: stErr } = await supabase
@@ -20,11 +18,17 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     .single();
 
   if (stErr) return NextResponse.json({ error: stErr.message }, { status: 400 });
-  if (!st?.email) return NextResponse.json({ error: 'Aluno sem e-mail cadastrado.' }, { status: 400 });
 
-  // ✅ Bloqueio: não permitir convidar aluno com e-mail igual ao do treinador
+  const studentEmailRaw = (st?.email ?? '').toString().trim();
+  if (!studentEmailRaw) {
+    return NextResponse.json(
+      { error: 'Aluno sem e-mail cadastrado.', code: 'STUDENT_NO_EMAIL' },
+      { status: 400 }
+    );
+  }
+
   const trainerEmail = (auth.user?.email ?? '').toString().trim().toLowerCase();
-  const studentEmail = st.email.toString().trim().toLowerCase();
+  const studentEmail = studentEmailRaw.toLowerCase();
   if (trainerEmail && studentEmail === trainerEmail) {
     return NextResponse.json(
       { error: 'O e-mail do aluno não pode ser o mesmo e-mail do treinador.' },
@@ -35,35 +39,57 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
   const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
 
-  // Se já estiver vinculado, não re-invita (evita duplicidade)
+  const admin = createAdminSupabase();
+  const nomeDoAluno = (st?.name ?? '').toString().trim();
+
+  // ✅ Se já existe auth_user_id, decidir se é "reenviar convite" (recovery) ou orientar esqueci senha
   if (st.auth_user_id) {
-    return NextResponse.json({
-      ok: true,
-      alreadyLinked: true,
-      message:
-        'Este aluno já possui login vinculado. Se precisar, use “Esqueci minha senha” em /aluno/login para redefinir.',
-    });
+    // tenta ler usuário do Auth para ver se já acessou
+    const { data: u, error: uErr } = await admin.auth.admin.getUserById(st.auth_user_id);
+
+    if (!uErr && u?.user) {
+      const last = u.user.last_sign_in_at;
+
+      // garante que o template tenha o nome (recovery usa user_metadata)
+      await admin.auth.admin.updateUserById(st.auth_user_id, {
+        user_metadata: { nome_do_aluno: nomeDoAluno },
+      });
+
+      // Se já fez login alguma vez, NÃO resetar senha automaticamente
+      if (last) {
+        return NextResponse.json({
+          ok: true,
+          alreadyActive: true,
+          message:
+            'Este aluno já acessou o Portal. Se precisar, peça para usar “Esqueci minha senha” no Portal do Aluno.',
+        });
+      }
+
+      // Nunca acessou: envia recovery (funciona como “criar senha / primeiro acesso”)
+      const { error: rpErr } = await admin.auth.resetPasswordForEmail(studentEmail, { redirectTo });
+      if (rpErr) return NextResponse.json({ error: rpErr.message }, { status: 400 });
+
+      return NextResponse.json({
+        ok: true,
+        resent: true,
+        method: 'recovery',
+        message: 'Acesso reenviado com sucesso (link para definir senha).',
+      });
+    }
+
+    // Se não conseguiu ler o usuário no Auth, cai para tentar invite novamente
+    // (caso raro: auth_user_id inválido)
   }
 
-  const admin = createAdminSupabase();
-
-  // ✅ data: { nome_do_aluno } para o template ({{ .Data.nome_do_aluno }})
-  const nomeDoAluno = (st.name ?? '').toString().trim();
-
-  const { data, error } = await admin.auth.admin.inviteUserByEmail(st.email, {
+  // ✅ Caso "primeiro convite" (sem auth_user_id)
+  const { data, error } = await admin.auth.admin.inviteUserByEmail(studentEmail, {
     redirectTo,
-    data: {
-      nome_do_aluno: nomeDoAluno,
-    },
+    data: { nome_do_aluno: nomeDoAluno },
   });
 
   if (error) {
     return NextResponse.json(
-      {
-        error: error.message,
-        hint:
-          'Se o aluno já tiver conta no Auth, use “Esqueci minha senha” em /aluno/login. Se quiser, posso criar um endpoint admin para vincular por e-mail.',
-      },
+      { error: error.message },
       { status: 400 }
     );
   }
