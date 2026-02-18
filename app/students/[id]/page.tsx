@@ -100,7 +100,6 @@ function formatPace(secPerKm: number | null) {
   return `${m}:${pad2(s)}/km`;
 }
 
-
 function isValidEmail(email: string): boolean {
   const v = (email || '').trim();
   if (!v) return false;
@@ -605,7 +604,7 @@ export default function StudentDetailPage() {
             <button
               className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
               disabled={inviteLoading}
-              onClick={inviteStudentAccess}
+              onClick={() => void inviteStudentAccess()}  {/* ✅ FIX: evita MouseEvent virar parâmetro boolean */}
               title={
                 !(student?.email || '').trim()
                   ? 'Cadastre o e-mail do aluno para enviar o convite'
@@ -627,7 +626,6 @@ export default function StudentDetailPage() {
             {inviteMsg}
           </div>
         )}
-
 
         {emailModalOpen && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
@@ -678,7 +676,6 @@ export default function StudentDetailPage() {
             </div>
           </div>
         )}
-
 
         {loading ? (
           <div className="text-sm text-slate-600 dark:text-slate-300">Carregando…</div>
