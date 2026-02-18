@@ -14,14 +14,13 @@ type StudentRow = {
   portal_enabled: boolean;
   p1k_sec_per_km: number | null;
 
-  // (1) novo campo
   auth_user_id: string | null;
 };
 
 type WeekRow = {
   id: string;
-  week_start: string; // YYYY-MM-DD
-  week_end: string | null; // YYYY-MM-DD
+  week_start: string;
+  week_end: string | null;
   label: string | null;
 };
 
@@ -37,8 +36,8 @@ type WorkoutRow = {
   include_cooldown: boolean | null;
   cooldown_km: number | null;
 
-  planned_date: string | null; // YYYY-MM-DD
-  planned_day: number | null; // 0..6
+  planned_date: string | null;
+  planned_day: number | null;
 
   share_slug: string | null;
   week_id: string | null;
@@ -68,7 +67,7 @@ function toISODate(d: Date) {
 }
 
 function addDaysISO(iso: string, days: number) {
-  const d = new Date(iso + 'T12:00:00'); // evita problemas de fuso
+  const d = new Date(iso + 'T12:00:00');
   d.setDate(d.getDate() + days);
   return toISODate(d);
 }
@@ -85,8 +84,8 @@ function formatWeekRange(weekStart: string, weekEnd: string | null) {
 }
 
 function mondayOfWeek(d: Date) {
-  const day = d.getDay(); // 0..6 (Dom..Sáb)
-  const diff = (day + 6) % 7; // dias desde segunda
+  const day = d.getDay();
+  const diff = (day + 6) % 7;
   const out = new Date(d);
   out.setDate(d.getDate() - diff);
   out.setHours(0, 0, 0, 0);
@@ -118,7 +117,6 @@ const DOW_PT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 function plannedLabel(workout: WorkoutRow, weekStart?: string | null) {
   let iso = workout.planned_date || null;
 
-  // fallback antigo: planned_day + week_start
   if (!iso && weekStart && workout.planned_day != null) {
     iso = addDaysISO(weekStart, Number(workout.planned_day));
   }
@@ -165,11 +163,9 @@ export default function StudentDetailPage() {
   const [workouts, setWorkouts] = useState<WorkoutRow[]>([]);
   const [latestExecByWorkout, setLatestExecByWorkout] = useState<Record<string, ExecutionRow | null>>({});
 
-  // (3) novos states
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
 
-  // (4) modal para cadastrar e-mail quando faltar
   const [emailModalOpen, setEmailModalOpen] = useState(false);
   const [emailDraft, setEmailDraft] = useState('');
   const [emailModalSaving, setEmailModalSaving] = useState(false);
@@ -183,7 +179,6 @@ export default function StudentDetailPage() {
 
     const { data, error } = await supabase
       .from('students')
-      // (2) inclui auth_user_id
       .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km,auth_user_id')
       .eq('id', studentId)
       .single();
@@ -327,13 +322,11 @@ export default function StudentDetailPage() {
     await loadWorkoutsForWeek(selectedWeekId);
   }
 
-  // (4) shareUrl + sharePortal (copiar/colar conforme você pediu)
   async function shareUrl(url: string) {
     const title = student?.name ? `Portal do aluno — ${student.name}` : 'Portal do aluno';
     const text = student?.name ? `Acesse os treinos do(a) ${student.name} pelo portal.` : 'Acesse os treinos pelo portal.';
 
     try {
-      // Abre a sheet de compartilhamento no celular (inclui WhatsApp)
       // @ts-ignore
       if (typeof navigator !== 'undefined' && (navigator as any).share) {
         // @ts-ignore
@@ -342,18 +335,15 @@ export default function StudentDetailPage() {
         return;
       }
 
-      // Fallback: copia link
       if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(url);
         setBanner('Link copiado! Cole no WhatsApp para enviar.');
         return;
       }
 
-      // Último fallback
       window.prompt('Copie o link abaixo e envie no WhatsApp:', url);
       setBanner('Link pronto para copiar.');
     } catch (e: any) {
-      // Cancelamento do share não é erro
       const msg = String(e?.message || '').toLowerCase();
       if (msg.includes('abort') || msg.includes('cancel')) return;
 
@@ -387,7 +377,6 @@ export default function StudentDetailPage() {
       .from('students')
       .update({ portal_enabled: true })
       .eq('id', student.id)
-      // (2) inclui auth_user_id aqui também
       .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km,auth_user_id')
       .single();
 
@@ -406,7 +395,6 @@ export default function StudentDetailPage() {
     }
   }
 
-  // (5) inviteStudentAccess
   async function inviteStudentAccess(skipEmailCheck = false) {
     if (!student) return;
     setInviteMsg(null);
@@ -470,12 +458,10 @@ export default function StudentDetailPage() {
       const normalized = v.toLowerCase();
       await patchStudentEmail(student.id, normalized);
 
-      // atualiza state local imediatamente
       setStudent((prev) => (prev ? ({ ...prev, email: normalized } as any) : prev));
 
       setEmailModalOpen(false);
 
-      // agora envia o convite/reenviar acesso
       await inviteStudentAccess(true);
       await loadStudent();
     } catch (e: any) {
@@ -568,7 +554,6 @@ export default function StudentDetailPage() {
             </div>
           </div>
 
-          {/* (6) sm:grid-cols-5 + botão Enviar convite */}
           <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
             <button
               className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
@@ -604,7 +589,7 @@ export default function StudentDetailPage() {
             <button
               className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
               disabled={inviteLoading}
-              onClick={() => void inviteStudentAccess()}  {/* ✅ FIX: evita MouseEvent virar parâmetro boolean */}
+              onClick={() => void inviteStudentAccess()}
               title={
                 !(student?.email || '').trim()
                   ? 'Cadastre o e-mail do aluno para enviar o convite'
@@ -620,7 +605,6 @@ export default function StudentDetailPage() {
           <div className="rounded-xl bg-amber-50 dark:bg-amber-900/20 p-3 text-sm text-amber-800 dark:text-amber-200">{banner}</div>
         )}
 
-        {/* (7) mensagem do convite */}
         {inviteMsg && (
           <div className="rounded-xl bg-emerald-50 dark:bg-emerald-900/20 p-3 text-sm text-emerald-800 dark:text-emerald-200">
             {inviteMsg}
