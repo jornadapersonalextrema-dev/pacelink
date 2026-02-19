@@ -7,8 +7,8 @@ type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
   rightAddon?: React.ReactNode;
 
   /**
-   * Se true, quando type="password" e não houver rightAddon,
-   * mostra automaticamente o botão "Mostrar/Ocultar".
+   * Mostra automaticamente o botão Mostrar/Ocultar
+   * quando type="password" e NÃO houver rightAddon.
    * Default: true
    */
   passwordToggle?: boolean;
@@ -23,13 +23,14 @@ export default function Input({
 }: InputProps) {
   const [showPassword, setShowPassword] = useState(false);
 
-  const isPassword = useMemo(() => {
-    return String(props.type || '').toLowerCase() === 'password';
-  }, [props.type]);
+  const isPassword = useMemo(
+    () => String(props.type || '').toLowerCase() === 'password',
+    [props.type]
+  );
 
-  const shouldAutoToggle = isPassword && passwordToggle && !rightAddon;
+  const shouldShowToggle = isPassword && passwordToggle && (rightAddon === undefined || rightAddon === null);
 
-  // evita passar "type" duplicado no spread
+  // evita duplicar "type" no spread
   const { type: _type, ...rest } = props;
 
   const effectiveType = isPassword ? (showPassword ? 'text' : 'password') : (props.type as any);
@@ -47,7 +48,7 @@ export default function Input({
 
         {rightAddon ? (
           rightAddon
-        ) : shouldAutoToggle ? (
+        ) : shouldShowToggle ? (
           <button
             type="button"
             onClick={() => setShowPassword((v) => !v)}
