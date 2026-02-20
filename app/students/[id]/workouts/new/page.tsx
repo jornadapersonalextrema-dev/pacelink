@@ -33,7 +33,7 @@ type WorkoutRow = {
   title: string | null;
 };
 
-type WeekRow = { id: string; week_start: string; week_end: string; label: string | null; };
+type WeekRow = { id: string; week_start: string; week_end: string; label: string | null };
 
 type BlockDraft = {
   id: string;
@@ -60,7 +60,6 @@ function formatWeekLabel(weekStart: string, weekEnd: string) {
   if (!ys || !ms || !ds || !ye || !me || !de) return `Semana ${weekStart} – ${weekEnd}`;
   return `Semana ${ds}/${ms} – ${de}/${me}`;
 }
-
 
 function toISODate(d: Date) {
   const yyyy = d.getFullYear();
@@ -90,6 +89,25 @@ function formatDateBR(iso: string | null | undefined) {
   return `${d}/${m}/${y}`;
 }
 
+function getSaoPauloISODate(date = new Date()) {
+  // yyyy-mm-dd no fuso de São Paulo (evita bug de fuso no mobile)
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+
+  const y = Number(parts.find((p) => p.type === 'year')?.value || 1970);
+  const m = Number(parts.find((p) => p.type === 'month')?.value || 1);
+  const d = Number(parts.find((p) => p.type === 'day')?.value || 1);
+
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
+function maxISO(a: string, b: string) {
+  return a >= b ? a : b;
+}
 
 function round1(n: number) {
   return Math.round(n * 10) / 10;
@@ -139,6 +157,33 @@ export default function NewWorkoutPage() {
     return week?.week_end || addDaysISO(week.week_start, 6);
   }, [week?.week_start, week?.week_end]);
 
+  // Data de hoje (fuso SP) para validações do calendário
+  const todayISO = useMemo(() => getSaoPauloISODate(new Date()), []);
+
+  // Opção B: não permitir criar treino em semana passada (semana já encerrada)
+  const isPastWeekBlocked = useMemo(() => {
+    if (!weekId) return false;
+    if (!weekStartISO || !weekEndISO) return false;
+    return weekEndISO < todayISO;
+  }, [weekId, weekStartISO, weekEndISO, todayISO]);
+
+  // min/max do calendário
+  // - semana futura: min = week_start
+  // - semana atual: min = hoje
+  // - semana passada: bloqueado (min/max não importam)
+  const minPlannedISO = useMemo(() => {
+    if (!weekId) return '';
+    if (!weekStartISO || !weekEndISO) return '';
+    if (weekEndISO < todayISO) return '';
+    return maxISO(weekStartISO, todayISO);
+  }, [weekId, weekStartISO, weekEndISO, todayISO]);
+
+  const maxPlannedISO = useMemo(() => {
+    if (!weekId) return '';
+    if (!weekStartISO || !weekEndISO) return '';
+    return weekEndISO;
+  }, [weekId, weekStartISO, weekEndISO]);
+
   const [title, setTitle] = useState<string>('Treino');
   const [plannedDate, setPlannedDate] = useState<string>('');
   const [includeWarmup, setIncludeWarmup] = useState(true);
@@ -152,14 +197,33 @@ export default function NewWorkoutPage() {
   ]);
 
   const totalKm = useMemo(
-    () => computeTotalKm(includeWarmup ? Math.max(0.1, parseKm(warmupKm)) : 0, includeCooldown ? Math.max(0.1, parseKm(cooldownKm)) : 0, blocks),
+    () => computeTotalKm(includeWarmup ? parseKm(warmupKm) : 0, includeCooldown ? parseKm(cooldownKm) : 0, blocks),
     [includeWarmup, warmupKm, includeCooldown, cooldownKm, blocks]
   );
 
   useEffect(() => {
-    // default: se veio por semana, já deixa a data prevista como o início da semana
-    if (weekStartISO && !plannedDate) setPlannedDate(weekStartISO);
-  }, [weekStartISO, plannedDate]);
+    // default: se veio por semana, define uma data válida automaticamente
+    // - semana passada: limpa e bloqueia
+    // - semana atual: hoje
+    // - semana futura: início da semana
+    if (!weekId || !weekStartISO) return;
+
+    if (isPastWeekBlocked) {
+      if (plannedDate) setPlannedDate('');
+      return;
+    }
+
+    const min = minPlannedISO || weekStartISO;
+    const max = maxPlannedISO || weekEndISO;
+
+    if (!plannedDate) {
+      setPlannedDate(min);
+      return;
+    }
+
+    if (plannedDate < min) setPlannedDate(min);
+    else if (max && plannedDate > max) setPlannedDate(max);
+  }, [weekId, weekStartISO, weekEndISO, plannedDate, isPastWeekBlocked, minPlannedISO, maxPlannedISO]);
 
   useEffect(() => {
     let mounted = true;
@@ -184,11 +248,7 @@ export default function NewWorkoutPage() {
         // Week (optional)
         if (weekId) {
           // tenta 'weeks' e faz fallback p/ 'training_weeks' (caso 'weeks' não exista)
-          const res1 = await supabase
-            .from('weeks')
-            .select('id,trainer_id,week_start,week_end,label')
-            .eq('id', weekId)
-            .maybeSingle();
+          const res1 = await supabase.from('weeks').select('id,trainer_id,week_start,week_end,label').eq('id', weekId).maybeSingle();
 
           let wk = res1.data as any;
           const wkErr = res1.error as any;
@@ -223,8 +283,7 @@ export default function NewWorkoutPage() {
         if (!mounted) return;
         setErr(e?.message || 'Erro ao carregar');
       } finally {
-        if (!mounted) return;
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     }
 
@@ -233,23 +292,6 @@ export default function NewWorkoutPage() {
       mounted = false;
     };
   }, [supabase, studentId, weekId]);
-
-  function updateBlock(id: string, patch: Partial<BlockDraft>) {
-    setBlocks((prev) => prev.map((b) => (b.id === id ? { ...b, ...patch } : b)));
-  }
-
-  function addBlock() {
-    const base = student?.p1k_sec_per_km || null;
-    const intensity: BlockDraft['intensity'] = 'moderado';
-    setBlocks((prev) => [
-      ...prev,
-      { id: uid(), distanceKm: '1', intensity, paceStr: paceFromIntensity(base, intensity), note: '' },
-    ]);
-  }
-
-  function removeBlock(id: string) {
-    setBlocks((prev) => prev.filter((b) => b.id !== id));
-  }
 
   async function saveWorkout() {
     if (!student) return;
@@ -275,11 +317,10 @@ export default function NewWorkoutPage() {
         include_cooldown: includeCooldown,
         cooldown_km: cool,
         total_km: totalKm,
-        share_slug: null,
         blocks: blocks.map((b) => ({
           distance_km: parseKm(b.distanceKm),
           intensity: b.intensity,
-          pace: b.paceStr || null,
+          pace_str: b.paceStr || null,
           notes: b.note || null,
         })),
       };
@@ -290,9 +331,22 @@ export default function NewWorkoutPage() {
 
       // data prevista (para aparecer no calendário semanal)
       if (weekId) {
+        if (isPastWeekBlocked) {
+          throw new Error('Não é permitido criar treino em semana passada. Selecione a semana atual ou uma semana futura.');
+        }
+
         if (!plannedDate) {
           throw new Error('Informe a data prevista para realização do treino.');
         }
+
+        // Regra: se a semana for a semana atual, não permitir datas anteriores a hoje
+        if (minPlannedISO && plannedDate < minPlannedISO) {
+          throw new Error(`A data prevista não pode ser anterior a ${formatDateBR(minPlannedISO)}.`);
+        }
+        if (maxPlannedISO && plannedDate > maxPlannedISO) {
+          throw new Error(`A data prevista precisa estar dentro da semana (${formatDateBR(weekStartISO)} – ${formatDateBR(weekEndISO)}).`);
+        }
+
         if (weekStartISO) {
           const day = diffDaysISO(weekStartISO, plannedDate);
           if (day < 0 || day > 6) {
@@ -303,12 +357,7 @@ export default function NewWorkoutPage() {
         insertPayload.planned_date = plannedDate;
       }
 
-      const { data: inserted, error } = await supabase
-        .from('workouts')
-        .insert(insertPayload)
-        .select('id')
-        .single();
-
+      const { data: inserted, error } = await supabase.from('workouts').insert(insertPayload).select('id').single();
       if (error) throw error;
 
       router.push(`/workouts/${inserted.id}/edit`);
@@ -319,203 +368,210 @@ export default function NewWorkoutPage() {
     }
   }
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-	<Topbar title="Novo treino" />
-        <div className="mx-auto max-w-4xl p-6">Carregando…</div>
-      </div>
-    );
-  }
+  const headerTitle = student?.name || 'Aluno';
+  const weekLabel = weekStartISO && weekEndISO ? (week?.label || formatWeekLabel(weekStartISO, weekEndISO)) : null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
-	<Topbar title="Novo treino" />
-      <div className="mx-auto max-w-4xl p-6 space-y-6">
-        <div className="rounded-3xl bg-surface-dark/70 border border-white/10 p-6">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <div className="text-sm text-white/60">Novo treino</div>
-              <div className="text-2xl font-extrabold">{student?.name}</div>
-              <div className="text-sm text-white/60 mt-1">Ritmo P1k: {secToPaceStr(student?.p1k_sec_per_km || null)}</div>
-              {week?.week_start && week?.week_end && (
-                <div className="mt-2 text-sm text-white/70">
-                  Semana: <span className="font-semibold">{week.label || formatWeekLabel(week.week_start, week.week_end)}</span>
-                </div>
-              )}
-            </div>
+    <div className="min-h-screen bg-background-dark text-white">
+      <Topbar title="Novo treino" />
 
-            <div className="flex gap-2">
-              <button
-                onClick={() => router.back()}
-                className="px-4 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10"
-              >
-                Voltar
-              </button>
-            </div>
-          </div>
-
-          {err && (
-            <div className="mt-4 rounded-2xl bg-red-500/15 border border-red-500/30 p-4 text-red-200">
-              {err}
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-3xl bg-surface-dark/70 border border-white/10 p-6 space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <div className="text-sm text-white/60 mb-1">Título</div>
-              <input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
-              />
-            </div>
-
-            <div>
-              <div className="text-sm text-white/60 mb-1">Total estimado</div>
-              <div className="h-12 rounded-2xl bg-black/30 border border-white/10 px-4 flex items-center font-bold">
-                {totalKm} km
+      <div className="max-w-4xl mx-auto px-5 pb-20">
+        <div className="pt-6">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-3xl font-black leading-tight break-words">{headerTitle}</div>
+              <div className="text-white/70 mt-1">
+                Ritmo P1k: <b>{secToPaceStr(student?.p1k_sec_per_km || null)}</b>
               </div>
+              {weekLabel ? <div className="text-white/50 text-sm mt-1">{weekLabel}</div> : null}
             </div>
-          </div>
 
-          {weekStartISO && (
-            <div className="mt-4">
-              <div className="text-sm text-white/60 mb-1">Data prevista</div>
-              <input
-                type="date"
-                value={plannedDate}
-                onChange={(e) => setPlannedDate(e.target.value)}
-                min={weekStartISO || undefined}
-                max={weekEndISO || undefined}
-                className="w-full md:w-64 h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
-              />
-              {weekStartISO && weekEndISO && (
-                <div className="mt-1 text-xs text-white/50">
-                  Selecione uma data dentro da semana ({formatDateBR(weekStartISO)} – {formatDateBR(weekEndISO)}).
-                </div>
-              )}
-            </div>
-          )}
-
-
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} />
-              <span className="text-white/80">Aquecimento</span>
-            </label>
-
-            <input
-              disabled={!includeWarmup}
-              value={warmupKm}
-              onChange={(e) => setWarmupKm(e.target.value)}
-              type="number"
-              step="0.5"
-              min="0.1"
-              className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
-            />
-            <span className="text-white/60">km</span>
-
-            <label className="flex items-center gap-2 md:ml-6">
-              <input type="checkbox" checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} />
-              <span className="text-white/80">Desaquecimento</span>
-            </label>
-
-            <input
-              disabled={!includeCooldown}
-              value={cooldownKm}
-              onChange={(e) => setCooldownKm(e.target.value)}
-              type="number"
-              step="0.5"
-              min="0.1"
-              className="w-28 h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none disabled:opacity-40"
-            />
-            <span className="text-white/60">km</span>
-          </div>
-        </div>
-
-        <div className="rounded-3xl bg-surface-dark/70 border border-white/10 p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="text-lg font-extrabold">Blocos</div>
             <button
-              onClick={addBlock}
-              className="px-4 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10"
+              className="rounded-2xl border border-white/10 px-4 py-2 text-sm font-bold text-white/80 hover:bg-white/5"
+              onClick={() => router.back()}
             >
-              + Adicionar bloco
+              Voltar
             </button>
           </div>
 
-          <div className="space-y-3">
-            {blocks.map((b, idx) => (
-              <div key={b.id} className="rounded-2xl bg-black/25 border border-white/10 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="font-bold">Bloco {idx + 1}</div>
-                  {blocks.length > 1 && (
-                    <button
-                      onClick={() => removeBlock(b.id)}
-                      className="text-sm text-red-200 hover:text-red-100"
-                    >
-                      Remover
-                    </button>
-                  )}
-                </div>
+          {err ? (
+            <div className="mt-4 rounded-2xl border border-amber-400/30 bg-amber-500/10 p-4 text-amber-200">
+              {err}
+            </div>
+          ) : null}
 
-                <div className="mt-3 grid gap-3 md:grid-cols-4">
-                  <div>
-                    <div className="text-sm text-white/60 mb-1">Distância (km)</div>
-                    <input
-                      value={b.distanceKm}
-                      onChange={(e) => updateBlock(b.id, { distanceKm: e.target.value })}
-                      className="w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
-                    />
-                  </div>
+          {loading ? <div className="mt-6 text-white/70">Carregando…</div> : null}
 
-                  <div>
-                    <div className="text-sm text-white/60 mb-1">Intensidade</div>
-                    <select
-                      value={b.intensity}
-                      onChange={(e) =>
-                        updateBlock(b.id, {
-                          intensity: e.target.value as any,
-                          paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, e.target.value as any),
-                        })
-                      }
-                      className="w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
-                    >
-                      <option value="leve">Leve</option>
-                      <option value="moderado">Moderado</option>
-                      <option value="forte">Forte</option>
-                    </select>
-                  </div>
+          <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-5">
+            <div className="text-sm text-white/60 mb-1">Título</div>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full md:w-[520px] h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+              placeholder="Ex.: Intervalado curto"
+            />
 
-                  <div>
-                    <div className="text-sm text-white/60 mb-1">Ritmo sugerido</div>
-                    <input
-                      value={b.paceStr}
-                      onChange={(e) => updateBlock(b.id, { paceStr: e.target.value })}
-                      className="w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
-                    />
+            {weekStartISO && (
+              <div className="mt-4">
+                <div className="text-sm text-white/60 mb-1">Data prevista</div>
+                <input
+                  type="date"
+                  value={plannedDate}
+                  onChange={(e) => setPlannedDate(e.target.value)}
+                  min={minPlannedISO || undefined}
+                  max={maxPlannedISO || undefined}
+                  disabled={isPastWeekBlocked}
+                  className="w-full md:w-64 h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary disabled:opacity-60"
+                />
+                {weekStartISO && weekEndISO && (
+                  <div className="mt-1 text-xs text-white/50">
+                    Selecione uma data dentro da semana ({formatDateBR(weekStartISO)} – {formatDateBR(weekEndISO)}).
+                    {weekId && !isPastWeekBlocked && minPlannedISO && minPlannedISO > weekStartISO ? (
+                      <span> Como a semana é a semana atual, a data mínima é hoje ({formatDateBR(minPlannedISO)}).</span>
+                    ) : null}
                   </div>
+                )}
 
-                  <div>
-                    <div className="text-sm text-white/60 mb-1">Obs</div>
-                    <input
-                      value={b.note}
-                      onChange={(e) => updateBlock(b.id, { note: e.target.value })}
-                      className="w-full h-10 rounded-2xl bg-black/30 border border-white/10 px-3 outline-none focus:border-primary"
-                    />
+                {weekId && isPastWeekBlocked ? (
+                  <div className="mt-2 text-sm text-amber-200">
+                    Semana passada: não é permitido criar treino em uma semana já encerrada. Selecione a semana atual ou uma futura.
                   </div>
-                </div>
+                ) : null}
               </div>
-            ))}
-          </div>
+            )}
 
-          <div className="pt-2">
-            <Button onClick={saveWorkout} disabled={saving}>
-              {saving ? 'Salvando…' : 'Criar treino'}
-            </Button>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6 mt-6">
+              <label className="flex items-center gap-2">
+                <input checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} type="checkbox" />
+                <span>Desaquecimento</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <div className="text-white/60 text-sm">km</div>
+                <input
+                  value={warmupKm}
+                  onChange={(e) => setWarmupKm(e.target.value)}
+                  className="w-24 h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6 mt-4">
+              <label className="flex items-center gap-2">
+                <input checked={includeCooldown} onChange={(e) => setIncludeCooldown(e.target.checked)} type="checkbox" />
+                <span>Desaquecimento</span>
+              </label>
+
+              <div className="flex items-center gap-2">
+                <div className="text-white/60 text-sm">km</div>
+                <input
+                  value={cooldownKm}
+                  onChange={(e) => setCooldownKm(e.target.value)}
+                  className="w-24 h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6">
+              <div className="text-lg font-black mb-2">Blocos</div>
+
+              <div className="space-y-3">
+                {blocks.map((b, idx) => (
+                  <div key={b.id} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="font-bold">Bloco {idx + 1}</div>
+                      <button
+                        className="text-sm underline text-white/70 hover:text-white"
+                        onClick={() => setBlocks((prev) => prev.filter((x) => x.id !== b.id))}
+                        disabled={blocks.length <= 1}
+                      >
+                        Remover
+                      </button>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div>
+                        <div className="text-xs text-white/60 mb-1">Distância (km)</div>
+                        <input
+                          value={b.distanceKm}
+                          onChange={(e) =>
+                            setBlocks((prev) => prev.map((x) => (x.id === b.id ? { ...x, distanceKm: e.target.value } : x)))
+                          }
+                          className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-white/60 mb-1">Intensidade</div>
+                        <select
+                          value={b.intensity}
+                          onChange={(e) =>
+                            setBlocks((prev) =>
+                              prev.map((x) =>
+                                x.id === b.id ? { ...x, intensity: e.target.value as any, paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, e.target.value as any) } : x
+                              )
+                            )
+                          }
+                          className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                        >
+                          <option value="leve">Leve</option>
+                          <option value="moderado">Moderado</option>
+                          <option value="forte">Forte</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <div className="text-xs text-white/60 mb-1">Ritmo sugerido</div>
+                        <input
+                          value={b.paceStr}
+                          onChange={(e) =>
+                            setBlocks((prev) => prev.map((x) => (x.id === b.id ? { ...x, paceStr: e.target.value } : x)))
+                          }
+                          className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                          placeholder="Ex.: 4:30/km"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <div className="text-xs text-white/60 mb-1">Observação</div>
+                      <input
+                        value={b.note}
+                        onChange={(e) =>
+                          setBlocks((prev) => prev.map((x) => (x.id === b.id ? { ...x, note: e.target.value } : x)))
+                        }
+                        className="w-full h-12 rounded-2xl bg-black/30 border border-white/10 px-4 outline-none focus:border-primary"
+                        placeholder="Ex.: manter cadência alta"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  className="rounded-2xl border border-white/10 px-4 py-2 font-bold hover:bg-white/5"
+                  onClick={() =>
+                    setBlocks((prev) => [...prev, { id: uid(), distanceKm: '1', intensity: 'moderado', paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, 'moderado'), note: '' }])
+                  }
+                >
+                  + Adicionar bloco
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-white/10 bg-black/20 p-4">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-white/70">Total</div>
+                <div className="text-lg font-black">{totalKm} km</div>
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <Button onClick={saveWorkout} disabled={saving || (weekId ? isPastWeekBlocked : false)}>
+                {saving ? 'Salvando…' : 'Criar treino'}
+              </Button>
+            </div>
           </div>
         </div>
       </div>
