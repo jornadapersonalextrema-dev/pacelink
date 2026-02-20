@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabaseBrowser';
 import { Topbar } from '@/components/Topbar';
 import { Card } from '@/components/Card';
 import { Button } from '@/components/Button';
+import { ModalConfirm } from '@/components/ModalConfirm';
 
 type StudentRow = {
   id: string;
@@ -15,10 +16,11 @@ type StudentRow = {
   p1k_sec_per_km: number;
   created_at: string;
   updated_at: string;
-};
 
-type MissingEmailItem = { id: string; name: string };
-type MissingEmailRow = { id: string; name: string; email: string };
+  is_active: boolean;
+  portal_enabled: boolean;
+  auth_user_id: string | null;
+};
 
 function parsePaceToSeconds(input: string): number | null {
   const v = (input || '').trim().replace(',', ':').replace('.', ':');
@@ -42,7 +44,6 @@ function formatPace(seconds?: number | null): string {
 function isValidEmail(email: string): boolean {
   const v = (email || '').trim();
   if (!v) return false;
-  // validação simples (suficiente para UI); o Supabase valida novamente no backend
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
@@ -95,16 +96,49 @@ export default function StudentsPage() {
   const [p1k, setP1k] = useState('5:00');
   const [saving, setSaving] = useState(false);
 
-  // (1) states + função “Convidar pendentes”
+  // Convidar pendentes
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
   const [inviteLoading, setInviteLoading] = useState(false);
 
+  // Mostrar inativos
+  const [showInactive, setShowInactive] = useState(false);
 
-  // (2) modal para alunos sem e-mail (usado no “Convidar pendentes”)
-  const [missingEmailOpen, setMissingEmailOpen] = useState(false);
-  const [missingEmailRows, setMissingEmailRows] = useState<MissingEmailRow[]>([]);
-  const [missingEmailSaving, setMissingEmailSaving] = useState(false);
-  const [missingEmailError, setMissingEmailError] = useState<string | null>(null);
+  // Menu/Ações por aluno
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [actionsStudent, setActionsStudent] = useState<StudentRow | null>(null);
+
+  // Confirmações
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmKind, setConfirmKind] = useState<'deactivate' | 'activate' | 'delete' | null>(null);
+  const [confirmStudent, setConfirmStudent] = useState<StudentRow | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  const inactiveCount = useMemo(() => students.filter((s) => s.is_active === false).length, [students]);
+  const visibleStudents = useMemo(() => {
+    if (showInactive) return students;
+    return students.filter((s) => s.is_active !== false);
+  }, [students, showInactive]);
+
+  async function loadStudents(tid: string) {
+    setError(null);
+    const { data, error } = await supabase
+      .from('students')
+      .select('id, trainer_id, name, email, p1k_sec_per_km, created_at, updated_at, is_active, portal_enabled, auth_user_id')
+      .eq('trainer_id', tid)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setError(error.message);
+      return;
+    }
+
+    const rows = ((data as any[]) || []).map((r) => ({
+      ...r,
+      is_active: r.is_active !== false, // fallback seguro
+    })) as StudentRow[];
+
+    setStudents(rows);
+  }
 
   async function invitePending() {
     setInviteMsg(null);
@@ -113,23 +147,7 @@ export default function StudentsPage() {
       const res = await fetch('/api/trainer/students/invite-pending', { method: 'POST' });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-
-      const missing: MissingEmailItem[] = Array.isArray(json?.missing_email) ? json.missing_email : [];
-      const errs = Array.isArray(json?.errors) ? json.errors : [];
-
-      const baseMsg = json?.message || 'Convites processados.';
-      const extra = errs.length ? ` • ${errs.length} erro(s)` : '';
-      setInviteMsg(baseMsg + extra);
-
-      if (missing.length > 0) {
-        setMissingEmailRows(missing.map((m) => ({ id: m.id, name: m.name, email: '' })));
-        setMissingEmailError(null);
-        setMissingEmailOpen(true);
-      } else {
-        setMissingEmailOpen(false);
-        setMissingEmailRows([]);
-        setMissingEmailError(null);
-      }
+      setInviteMsg(json?.message || 'Convites processados.');
     } catch (e: any) {
       setInviteMsg(e?.message || 'Erro ao convidar pendentes.');
     } finally {
@@ -137,80 +155,73 @@ export default function StudentsPage() {
     }
   }
 
-  async function loadStudents(trId?: string | null) {
-    const tid = trId ?? trainerId;
-    if (!tid) return;
-
-    setError(null);
-    const { data, error } = await supabase
-      .from('students')
-      .select('id, trainer_id, name, email, p1k_sec_per_km, created_at, updated_at')
-      .eq('trainer_id', tid)
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    setStudents((data as StudentRow[]) || []);
+  function openActions(s: StudentRow) {
+    setActionsStudent(s);
+    setActionsOpen(true);
   }
 
-  async function patchStudentEmail(studentId: string, emailValue: string) {
-    const res = await fetch(`/api/trainer/students/${studentId}/email`, {
+  function closeActions() {
+    setActionsOpen(false);
+    setActionsStudent(null);
+  }
+
+  function openConfirm(kind: 'deactivate' | 'activate' | 'delete', s: StudentRow) {
+    setConfirmKind(kind);
+    setConfirmStudent(s);
+    setConfirmOpen(true);
+  }
+
+  function closeConfirm() {
+    setConfirmOpen(false);
+    setConfirmKind(null);
+    setConfirmStudent(null);
+  }
+
+  async function apiPatchStudent(studentId: string, payload: any) {
+    const res = await fetch(`/api/trainer/students/${studentId}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: emailValue }),
+      body: JSON.stringify(payload),
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-    return (json?.email || emailValue) as string;
+    return json;
   }
 
-  async function saveMissingEmailsAndContinue() {
-    if (!trainerId) return;
+  async function apiDeleteStudent(studentId: string) {
+    const res = await fetch(`/api/trainer/students/${studentId}`, { method: 'DELETE' });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
+    return json;
+  }
 
-    setMissingEmailError(null);
+  async function runConfirmedAction() {
+    if (!trainerId || !confirmKind || !confirmStudent) return;
 
-    const toUpdate = missingEmailRows
-      .map((r) => ({ ...r, email: (r.email || '').trim() }))
-      .filter((r) => r.email.length > 0);
+    setActionBusy(true);
+    setError(null);
+    setInviteMsg(null);
 
-    if (toUpdate.length === 0) {
-      setMissingEmailError('Preencha pelo menos um e-mail (ou clique em Cancelar).');
-      return;
-    }
-
-    for (const r of toUpdate) {
-      if (!isValidEmail(r.email)) {
-        setMissingEmailError(`E-mail inválido para: ${r.name}`);
-        return;
-      }
-    }
-
-    setMissingEmailSaving(true);
     try {
-      for (const r of toUpdate) {
-        const normalized = r.email.toLowerCase();
-        await patchStudentEmail(r.id, normalized);
-
-        // atualiza lista local imediatamente
-        setStudents((prev) => prev.map((s) => (s.id === r.id ? { ...s, email: normalized } : s)));
+      if (confirmKind === 'deactivate') {
+        await apiPatchStudent(confirmStudent.id, { is_active: false, disable_portal: true });
+        setInviteMsg(`Aluno inativado: ${confirmStudent.name}`);
+      } else if (confirmKind === 'activate') {
+        await apiPatchStudent(confirmStudent.id, { is_active: true });
+        setInviteMsg(`Aluno reativado: ${confirmStudent.name}`);
+      } else if (confirmKind === 'delete') {
+        await apiDeleteStudent(confirmStudent.id);
+        setInviteMsg(`Aluno apagado: ${confirmStudent.name}`);
       }
 
-      // chama novamente para enviar convites também para os recém-atualizados
-      await invitePending();
-
-      // se ainda tiver faltando e-mail, mantém o modal aberto com a lista atualizada
-      // (o invitePending já abre/fecha conforme o retorno)
+      await loadStudents(trainerId);
     } catch (e: any) {
-      setMissingEmailError(e?.message || 'Erro ao salvar e-mails.');
+      setError(e?.message || 'Erro ao executar ação.');
     } finally {
-      setMissingEmailSaving(false);
+      setActionBusy(false);
+      closeConfirm();
+      closeActions();
     }
-  }
-
-  function updateMissingEmail(id: string, value: string) {
-    setMissingEmailRows((prev) => prev.map((r) => (r.id === id ? { ...r, email: value } : r)));
   }
 
   useEffect(() => {
@@ -234,8 +245,9 @@ export default function StudentsPage() {
   }, [router, supabase]);
 
   useEffect(() => {
-    loadStudents();
-  }, [trainerId, supabase]);
+    if (!trainerId) return;
+    void loadStudents(trainerId);
+  }, [trainerId]);
 
   const handleSignOut = async () => {
     if (signingOut) return;
@@ -290,12 +302,14 @@ export default function StudentsPage() {
       const payload: any = {
         trainer_id: trainerId,
         name: name.trim(),
-        email: emailTrim ? emailTrim.toLowerCase() : null, // ✅ null quando vazio
+        email: emailTrim ? emailTrim.toLowerCase() : null,
         p1k_sec_per_km: p1kSec,
 
         public_slug,
         portal_token,
         portal_enabled: false,
+
+        is_active: true,
       };
 
       const { data, error } = await supabase.from('students').insert([payload]).select('id').single();
@@ -314,6 +328,49 @@ export default function StudentsPage() {
     }
   };
 
+  const confirmTitle = useMemo(() => {
+    if (!confirmKind || !confirmStudent) return '';
+    if (confirmKind === 'delete') return 'Apagar aluno?';
+    if (confirmKind === 'deactivate') return 'Inativar aluno?';
+    return 'Reativar aluno?';
+  }, [confirmKind, confirmStudent]);
+
+  const confirmMessage = useMemo(() => {
+    if (!confirmKind || !confirmStudent) return '';
+    const n = confirmStudent.name;
+
+    if (confirmKind === 'delete') {
+      return (
+        `Tem certeza que deseja APAGAR o aluno "${n}"?\n\n` +
+        `⚠️ Esta ação é permanente.\n` +
+        `Todos os dados do aluno no sistema serão perdidos (treinos, semanas, execuções e relatórios).`
+      );
+    }
+
+    if (confirmKind === 'deactivate') {
+      return (
+        `Inativar o aluno "${n}"?\n\n` +
+        `Ele vai SUMIR da lista principal.\n` +
+        `O Portal do aluno será DESABILITADO imediatamente.`
+      );
+    }
+
+    return (
+      `Reativar o aluno "${n}"?\n\n` +
+      `Ele voltará para a lista principal.\n` +
+      `O Portal continuará desabilitado até você enviar um novo convite.`
+    );
+  }, [confirmKind, confirmStudent]);
+
+  const confirmLabel = useMemo(() => {
+    if (confirmKind === 'delete') return actionBusy ? 'Apagando…' : 'Apagar definitivamente';
+    if (confirmKind === 'deactivate') return actionBusy ? 'Inativando…' : 'Inativar';
+    if (confirmKind === 'activate') return actionBusy ? 'Reativando…' : 'Reativar';
+    return 'Confirmar';
+  }, [confirmKind, actionBusy]);
+
+  const confirmVariant = confirmKind === 'delete' ? 'danger' : 'primary';
+
   return (
     <div className="flex-1 flex flex-col bg-background-light dark:bg-background-dark">
       <Topbar title="Alunos" />
@@ -321,7 +378,20 @@ export default function StudentsPage() {
       <main className="flex-1 overflow-y-auto no-scrollbar pb-28">
         <div className="px-5 pt-6">
           {trainerId ? (
-            <div className="flex items-center justify-end mb-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                {inactiveCount > 0 ? (
+                  <button
+                    className="text-sm underline text-slate-500 dark:text-slate-300"
+                    onClick={() => setShowInactive((v) => !v)}
+                  >
+                    {showInactive ? 'Ocultar inativos' : `Mostrar inativos (${inactiveCount})`}
+                  </button>
+                ) : (
+                  <span className="text-sm text-slate-500 dark:text-slate-300"> </span>
+                )}
+              </div>
+
               <button
                 className="text-sm underline text-slate-500 dark:text-slate-300 disabled:opacity-50"
                 onClick={handleSignOut}
@@ -348,28 +418,74 @@ export default function StudentsPage() {
             <Card className="p-4">Carregando...</Card>
           ) : (
             <>
-              {students.length === 0 ? (
+              {visibleStudents.length === 0 ? (
                 <Card className="p-5 text-sm text-slate-500">
-                  Nenhum aluno cadastrado ainda. Toque em <b>Novo Aluno</b> para começar.
+                  {students.length === 0 ? (
+                    <>
+                      Nenhum aluno cadastrado ainda. Toque em <b>Novo Aluno</b> para começar.
+                    </>
+                  ) : (
+                    <>
+                      Nenhum aluno <b>ativo</b> na lista.{' '}
+                      {inactiveCount > 0 ? (
+                        <button className="underline" onClick={() => setShowInactive(true)}>
+                          Mostrar inativos
+                        </button>
+                      ) : null}
+                    </>
+                  )}
                 </Card>
               ) : (
                 <div className="space-y-4">
-                  {students.map((s) => (
-                    <Card
-                      key={s.id}
-                      className="p-4 flex items-center justify-between cursor-pointer"
-                      onClick={() => router.push(`/students/${s.id}`)}
-                    >
-                      <div>
-                        <div className="font-bold text-base">{s.name}</div>
-                        <div className="text-xs text-slate-500 mt-1">
-                          P1k: <span className="text-primary font-bold">{formatPace(s.p1k_sec_per_km)}</span> min/km
-                          {s.email ? <span className="text-slate-400"> • {s.email}</span> : null}
+                  {visibleStudents.map((s) => {
+                    const isInactive = s.is_active === false;
+
+                    return (
+                      <Card
+                        key={s.id}
+                        className="p-4 flex items-center justify-between cursor-pointer"
+                        onClick={() => router.push(`/students/${s.id}`)}
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <div className="font-bold text-base truncate">{s.name}</div>
+                            {isInactive ? (
+                              <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-slate-200 text-slate-700 dark:bg-white/10 dark:text-slate-200">
+                                INATIVO
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="text-xs text-slate-500 mt-1">
+                            P1k: <span className="text-primary font-bold">{formatPace(s.p1k_sec_per_km)}</span> min/km
+                            {s.email ? <span className="text-slate-400"> • {s.email}</span> : null}
+                            {s.portal_enabled ? (
+                              <span className="text-emerald-500 dark:text-emerald-300"> • Portal ON</span>
+                            ) : (
+                              <span className="text-slate-400"> • Portal OFF</span>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                      <span className="material-symbols-outlined text-slate-400">chevron_right</span>
-                    </Card>
-                  ))}
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            className="rounded-xl px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openActions(s);
+                            }}
+                            aria-label="Ações"
+                            title="Ações"
+                          >
+                            <span className="material-symbols-outlined text-slate-400">more_vert</span>
+                          </button>
+
+                          <span className="material-symbols-outlined text-slate-400">chevron_right</span>
+                        </div>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
             </>
@@ -377,25 +493,31 @@ export default function StudentsPage() {
         </div>
       </main>
 
-      {/* (3) CTA com dois botões */}
+      {/* CTA fixo */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-background-light dark:from-background-dark via-background-light/95 to-transparent">
         <div className="max-w-md mx-auto space-y-2">
           <Button onClick={invitePending} icon="mail" disabled={inviteLoading}>
             {inviteLoading ? 'Enviando convites…' : 'Convidar pendentes'}
           </Button>
 
-          <Button onClick={() => { setError(null); setOpenNew(true); }} icon="person_add">
+          <Button
+            onClick={() => {
+              setError(null);
+              setOpenNew(true);
+            }}
+            icon="person_add"
+          >
             Novo Aluno
           </Button>
         </div>
       </div>
 
+      {/* Modal: Novo aluno */}
       {openNew && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
           <Card className="w-full max-w-md p-5">
             <div className="text-lg font-black mb-4">Novo Aluno</div>
 
-            {/* ✅ erro visível dentro do modal */}
             {error && (
               <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-600 dark:text-red-300 mb-4">
                 {error}
@@ -409,7 +531,7 @@ export default function StudentsPage() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   className="w-full rounded-xl bg-surface-dark border border-white/10 px-4 py-3 text-white outline-none"
-                  placeholder="Ex.: Marcio Automatik"
+                  placeholder="Ex.: Márcio Automatik"
                 />
               </div>
 
@@ -457,61 +579,67 @@ export default function StudentsPage() {
         </div>
       )}
 
-      {missingEmailOpen && (
-        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-md p-5">
-            <div className="text-lg font-black mb-1">Faltam e-mails</div>
-            <div className="text-sm text-slate-400 mb-4">
-              Alguns alunos ainda não têm e-mail cadastrado. Sem e-mail não é possível enviar o convite para o Portal.
+      {/* Modal: ações do aluno */}
+      {actionsOpen && actionsStudent ? (
+        <div className="fixed inset-0 z-[90] flex items-end sm:items-center justify-center bg-black/50 p-4">
+          <div className="absolute inset-0" onClick={closeActions} />
+          <Card className="w-full max-w-md p-5 relative z-10">
+            <div className="text-lg font-black mb-1">{actionsStudent.name}</div>
+            <div className="text-xs text-slate-500 mb-4">
+              {actionsStudent.is_active === false ? 'Aluno inativo • Portal desabilitado' : actionsStudent.portal_enabled ? 'Ativo • Portal habilitado' : 'Ativo • Portal desabilitado'}
             </div>
 
-            {missingEmailError && (
-              <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-600 dark:text-red-300 mb-4">
-                {missingEmailError}
-              </div>
-            )}
-
-            <div className="space-y-3 max-h-[50vh] overflow-y-auto pr-1">
-              {missingEmailRows.map((r) => (
-                <div key={r.id} className="rounded-xl border border-white/10 bg-surface-dark p-3">
-                  <div className="text-sm font-bold text-white">{r.name}</div>
-                  <div className="mt-2">
-                    <input
-                      type="email"
-                      inputMode="email"
-                      autoComplete="email"
-                      value={r.email}
-                      onChange={(e) => updateMissingEmail(r.id, e.target.value)}
-                      className="w-full rounded-xl bg-surface-dark border border-white/10 px-4 py-3 text-white outline-none"
-                      placeholder="aluno@email.com"
-                    />
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">
-                    Se você não tiver o e-mail agora, pode deixar em branco e cancelar.
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-5 space-y-3">
-              <Button onClick={saveMissingEmailsAndContinue} disabled={missingEmailSaving || inviteLoading}>
-                {missingEmailSaving ? 'Salvando…' : 'Salvar e enviar convites'}
+            <div className="space-y-2">
+              <Button onClick={() => { closeActions(); router.push(`/students/${actionsStudent.id}`); }} icon="open_in_new">
+                Abrir aluno
               </Button>
-              <button
-                className="w-full text-center text-slate-400 font-bold py-2 disabled:opacity-50"
-                disabled={missingEmailSaving || inviteLoading}
-                onClick={() => {
-                  setMissingEmailOpen(false);
-                  setMissingEmailRows([]);
-                  setMissingEmailError(null);
-                }}
+
+              {actionsStudent.is_active === false ? (
+                <Button
+                  onClick={() => openConfirm('activate', actionsStudent)}
+                  icon="play_circle"
+                  disabled={actionBusy}
+                >
+                  Reativar (portal continua desabilitado)
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => openConfirm('deactivate', actionsStudent)}
+                  icon="pause_circle"
+                  disabled={actionBusy}
+                >
+                  Inativar (desabilita o portal)
+                </Button>
+              )}
+
+              <Button
+                variant="danger"
+                onClick={() => openConfirm('delete', actionsStudent)}
+                icon="delete"
+                disabled={actionBusy}
               >
+                Apagar definitivamente
+              </Button>
+
+              <Button variant="ghost" onClick={closeActions}>
                 Cancelar
-              </button>
+              </Button>
             </div>
           </Card>
         </div>
-      )}
+      ) : null}
+
+      {/* Confirmação */}
+      <ModalConfirm
+        isOpen={confirmOpen}
+        onClose={closeConfirm}
+        onConfirm={runConfirmedAction}
+        title={confirmTitle}
+        message={confirmMessage}
+        confirmLabel={confirmLabel}
+        cancelLabel="Cancelar"
+        variant={confirmVariant}
+      />
     </div>
   );
 }

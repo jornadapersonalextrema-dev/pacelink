@@ -1,8 +1,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
+import { randomBytes } from 'crypto';
 import { requireTrainer } from '@/lib/authGuard';
 import { createAdminSupabase } from '@/lib/supabaseAdmin';
 
-type MissingEmailItem = { id: string; name: string };
+export const runtime = 'nodejs';
+
+function randomToken(bytes = 24) {
+  return randomBytes(bytes).toString('base64url');
+}
 
 export async function POST(_req: NextRequest) {
   const auth = await requireTrainer();
@@ -11,124 +16,98 @@ export async function POST(_req: NextRequest) {
   const supabase = await Promise.resolve(auth.supabase as any);
   const admin = createAdminSupabase();
 
-  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
-  const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
+  const trainerEmail = ((auth.user as any)?.email || '').toString().trim().toLowerCase() || null;
 
-  const trainerEmail = (auth.user?.email ?? '').toString().trim().toLowerCase();
-
-  const { data: students, error } = await supabase
+  // Somente alunos ativos
+  const { data: rows, error } = await supabase
     .from('students')
-    .select('id,name,email,auth_user_id')
-    .eq('trainer_id', auth.user.id);
+    .select('id,name,email,auth_user_id,portal_enabled,portal_token,is_active')
+    .eq('trainer_id', auth.user.id)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
 
-  const missing_email: MissingEmailItem[] = [];
+  const students = (rows || []) as any[];
+
+  const missing_email: Array<{ id: string; name: string }> = [];
   const errors: Array<{ id: string; name: string; error: string }> = [];
 
-  let invited = 0;
-  let resent = 0;
-  let skipped_already_active = 0;
-
-  for (const st of students ?? []) {
-    const name = (st?.name ?? '').toString().trim();
-    const emailRaw = (st?.email ?? '').toString().trim();
-    const authUserId = st?.auth_user_id as string | null;
-
-    if (!emailRaw) {
-      missing_email.push({ id: st.id, name });
-      continue;
+  const toInvite = students.filter((s) => {
+    if (!s.email) {
+      missing_email.push({ id: s.id, name: s.name });
+      return false;
     }
+    if (s.auth_user_id) return false; // já tem login vinculado
+    return true;
+  });
 
-    const email = emailRaw.toLowerCase();
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || 'https://pace-link-two.vercel.app';
+  const redirectTo = `${siteUrl}/aluno/primeiro-acesso`;
+
+  let invitedCount = 0;
+
+  for (const st of toInvite) {
+    const email = String(st.email || '').trim().toLowerCase();
+    if (!email) continue;
+
     if (trainerEmail && email === trainerEmail) {
-      errors.push({ id: st.id, name, error: 'E-mail do aluno é igual ao do treinador.' });
+      errors.push({ id: st.id, name: st.name, error: 'E-mail do aluno é o mesmo do treinador.' });
       continue;
     }
 
-    try {
-      // Caso sem auth_user_id: primeiro convite
-      if (!authUserId) {
-        const { data, error: invErr } = await admin.auth.admin.inviteUserByEmail(email, {
-          redirectTo,
-          data: { nome_do_aluno: name },
-        });
+    const { data, error: invErr } = await admin.auth.admin.inviteUserByEmail(email, { redirectTo });
 
-        if (invErr) {
-          errors.push({ id: st.id, name, error: invErr.message });
-          continue;
-        }
-
-        const invitedId = data?.user?.id;
-        if (invitedId) {
-          const { error: upErr } = await supabase
-            .from('students')
-            .update({ auth_user_id: invitedId })
-            .eq('id', st.id)
-            .eq('trainer_id', auth.user.id);
-
-          if (upErr) {
-            errors.push({ id: st.id, name, error: upErr.message });
-            continue;
-          }
-        }
-
-        invited++;
-        continue;
-      }
-
-      // Caso com auth_user_id: verificar se já acessou
-      const { data: u, error: uErr } = await admin.auth.admin.getUserById(authUserId);
-      if (uErr || !u?.user) {
-        // se não achar user, tenta mandar invite como fallback
-        const { error: invErr } = await admin.auth.admin.inviteUserByEmail(email, {
-          redirectTo,
-          data: { nome_do_aluno: name },
-        });
-        if (invErr) {
-          errors.push({ id: st.id, name, error: invErr.message });
-        } else {
-          invited++;
-        }
-        continue;
-      }
-
-      const last = u.user.last_sign_in_at;
-      if (last) {
-        skipped_already_active++;
-        continue;
-      }
-
-      // Nunca acessou → enviar recovery (reenviar acesso/criar senha)
-      await admin.auth.admin.updateUserById(authUserId, {
-        user_metadata: { nome_do_aluno: name },
-      });
-
-      const { error: rpErr } = await admin.auth.resetPasswordForEmail(email, { redirectTo });
-      if (rpErr) {
-        errors.push({ id: st.id, name, error: rpErr.message });
-        continue;
-      }
-
-      resent++;
-    } catch (e: any) {
-      errors.push({ id: st.id, name, error: e?.message || 'Erro desconhecido.' });
+    if (invErr) {
+      errors.push({ id: st.id, name: st.name, error: invErr.message });
+      continue;
     }
+
+    const invitedId = data?.user?.id;
+    if (!invitedId) {
+      errors.push({ id: st.id, name: st.name, error: 'Convite enviado, mas não foi possível obter user.id.' });
+      continue;
+    }
+
+    const patch: any = {
+      auth_user_id: invitedId,
+      portal_enabled: true,
+    };
+
+    // garante token do portal
+    if (!st.portal_token) {
+      patch.portal_token = randomToken(24);
+      patch.portal_token_created_at = new Date().toISOString();
+    }
+
+    const { error: upErr } = await admin
+      .from('students')
+      .update(patch)
+      .eq('id', st.id)
+      .eq('trainer_id', auth.user.id);
+
+    if (upErr) {
+      errors.push({ id: st.id, name: st.name, error: upErr.message });
+      continue;
+    }
+
+    invitedCount += 1;
   }
 
-  const messageParts: string[] = [];
-  if (invited) messageParts.push(`${invited} convite(s) enviado(s)`);
-  if (resent) messageParts.push(`${resent} acesso(s) reenviado(s)`);
-  if (skipped_already_active) messageParts.push(`${skipped_already_active} já usam o Portal`);
-  if (missing_email.length) messageParts.push(`${missing_email.length} sem e-mail (precisa preencher)`);
+  const alreadyLinked = students.filter((s) => !!s.auth_user_id).length;
+
+  const msg =
+    `Convites enviados: ${invitedCount}. ` +
+    `Já vinculados: ${alreadyLinked}. ` +
+    (missing_email.length ? `Sem e-mail: ${missing_email.length}. ` : '') +
+    (errors.length ? `Erros: ${errors.length}.` : 'Sem erros.');
 
   return NextResponse.json({
     ok: true,
-    invited,
-    resent,
-    skipped_already_active,
+    message: msg.trim(),
+    invited_count: invitedCount,
+    already_linked_count: alreadyLinked,
     missing_email,
     errors,
-    message: messageParts.length ? messageParts.join(' • ') : 'Nada para processar.',
   });
 }
