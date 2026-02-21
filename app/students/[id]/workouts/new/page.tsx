@@ -33,7 +33,7 @@ type WorkoutRow = {
   title: string | null;
 };
 
-type WeekRow = { id: string; week_start: string; week_end: string; label: string | null };
+type WeekRow = { id: string; week_start: string; week_end: string; label: string | null; };
 
 type BlockDraft = {
   id: string;
@@ -143,6 +143,7 @@ export default function NewWorkoutPage() {
 
   const studentId = String(params?.id || '');
   const weekId = search?.get('weekId');
+  const copyFrom = search?.get('copyFrom');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -185,6 +186,7 @@ export default function NewWorkoutPage() {
   }, [weekId, weekStartISO, weekEndISO]);
 
   const [title, setTitle] = useState<string>('Treino');
+  const [templateType, setTemplateType] = useState<string>('easy_run');
   const [plannedDate, setPlannedDate] = useState<string>('');
   const [includeWarmup, setIncludeWarmup] = useState(true);
   const [warmupKm, setWarmupKm] = useState<string>('1');
@@ -248,7 +250,11 @@ export default function NewWorkoutPage() {
         // Week (optional)
         if (weekId) {
           // tenta 'weeks' e faz fallback p/ 'training_weeks' (caso 'weeks' não exista)
-          const res1 = await supabase.from('weeks').select('id,trainer_id,week_start,week_end,label').eq('id', weekId).maybeSingle();
+          const res1 = await supabase
+            .from('weeks')
+            .select('id,trainer_id,week_start,week_end,label')
+            .eq('id', weekId)
+            .maybeSingle();
 
           let wk = res1.data as any;
           const wkErr = res1.error as any;
@@ -270,6 +276,46 @@ export default function NewWorkoutPage() {
           setWeek(wk as any);
         }
 
+        // CopyFrom: pré-preenchimento ao copiar um treino existente
+        if (copyFrom) {
+          const { data: sess } = await supabase.auth.getSession();
+          const trainerId = sess?.session?.user?.id;
+          if (!trainerId) throw new Error('Você precisa estar logado como treinador.');
+
+          const { data: src, error: srcErr } = await supabase
+            .from('workouts')
+            .select('id,title,template_type,include_warmup,warmup_km,include_cooldown,cooldown_km,blocks,total_km')
+            .eq('id', copyFrom)
+            .eq('trainer_id', trainerId)
+            .maybeSingle();
+
+          if (srcErr) throw srcErr;
+          if (!src) throw new Error('Treino de origem não encontrado.');
+
+          if (!mounted) return;
+
+          setTitle((src as any).title || 'Treino');
+          setTemplateType((src as any).template_type || 'easy_run');
+
+          setIncludeWarmup(!!(src as any).include_warmup);
+          if ((src as any).warmup_km != null) setWarmupKm(String((src as any).warmup_km));
+          setIncludeCooldown(!!(src as any).include_cooldown);
+          if ((src as any).cooldown_km != null) setCooldownKm(String((src as any).cooldown_km));
+
+          const srcBlocks = Array.isArray((src as any).blocks) ? (src as any).blocks : [];
+          if (srcBlocks.length > 0) {
+            setBlocks(
+              srcBlocks.map((b: any) => ({
+                id: uid(),
+                distanceKm: String(b.distance_km ?? b.distanceKm ?? 1),
+                intensity: (b.intensity === 'leve' || b.intensity === 'moderado' || b.intensity === 'forte') ? b.intensity : 'moderado',
+                paceStr: String(b.pace_str ?? b.paceStr ?? ''),
+                note: String(b.notes ?? b.note ?? ''),
+              }))
+            );
+          }
+        }
+
         // Pre-fill pace suggestions
         if (st?.p1k_sec_per_km) {
           setBlocks((prev) =>
@@ -283,7 +329,8 @@ export default function NewWorkoutPage() {
         if (!mounted) return;
         setErr(e?.message || 'Erro ao carregar');
       } finally {
-        if (mounted) setLoading(false);
+        if (!mounted) return;
+        setLoading(false);
       }
     }
 
@@ -291,7 +338,7 @@ export default function NewWorkoutPage() {
     return () => {
       mounted = false;
     };
-  }, [supabase, studentId, weekId]);
+  }, [supabase, studentId, weekId, copyFrom]);
 
   async function saveWorkout() {
     if (!student) return;
@@ -310,7 +357,7 @@ export default function NewWorkoutPage() {
         trainer_id: trainerId,
         student_id: student.id,
         status: 'draft',
-        template_type: 'easy_run',
+        template_type: templateType,
         title: title?.trim() || null,
         include_warmup: includeWarmup,
         warmup_km: warm,
@@ -325,11 +372,9 @@ export default function NewWorkoutPage() {
         })),
       };
 
-      // vínculo com semana (se veio pela tela de semana)
       const insertPayload: any = { ...payload };
       if (weekId) insertPayload.week_id = weekId;
 
-      // data prevista (para aparecer no calendário semanal)
       if (weekId) {
         if (isPastWeekBlocked) {
           throw new Error('Não é permitido criar treino em semana passada. Selecione a semana atual ou uma semana futura.');
@@ -339,7 +384,6 @@ export default function NewWorkoutPage() {
           throw new Error('Informe a data prevista para realização do treino.');
         }
 
-        // Regra: se a semana for a semana atual, não permitir datas anteriores a hoje
         if (minPlannedISO && plannedDate < minPlannedISO) {
           throw new Error(`A data prevista não pode ser anterior a ${formatDateBR(minPlannedISO)}.`);
         }
@@ -384,6 +428,7 @@ export default function NewWorkoutPage() {
                 Ritmo P1k: <b>{secToPaceStr(student?.p1k_sec_per_km || null)}</b>
               </div>
               {weekLabel ? <div className="text-white/50 text-sm mt-1">{weekLabel}</div> : null}
+              {copyFrom ? <div className="text-white/50 text-sm mt-1">Cópia de treino: {copyFrom}</div> : null}
             </div>
 
             <button
@@ -443,7 +488,7 @@ export default function NewWorkoutPage() {
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-6 mt-6">
               <label className="flex items-center gap-2">
                 <input checked={includeWarmup} onChange={(e) => setIncludeWarmup(e.target.checked)} type="checkbox" />
-                <span>Desaquecimento</span>
+                <span>Aquecimento</span>
               </label>
 
               <div className="flex items-center gap-2">
@@ -508,7 +553,9 @@ export default function NewWorkoutPage() {
                           onChange={(e) =>
                             setBlocks((prev) =>
                               prev.map((x) =>
-                                x.id === b.id ? { ...x, intensity: e.target.value as any, paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, e.target.value as any) } : x
+                                x.id === b.id
+                                  ? { ...x, intensity: e.target.value as any, paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, e.target.value as any) }
+                                  : x
                               )
                             )
                           }
@@ -552,7 +599,10 @@ export default function NewWorkoutPage() {
                 <button
                   className="rounded-2xl border border-white/10 px-4 py-2 font-bold hover:bg-white/5"
                   onClick={() =>
-                    setBlocks((prev) => [...prev, { id: uid(), distanceKm: '1', intensity: 'moderado', paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, 'moderado'), note: '' }])
+                    setBlocks((prev) => [
+                      ...prev,
+                      { id: uid(), distanceKm: '1', intensity: 'moderado', paceStr: paceFromIntensity(student?.p1k_sec_per_km || null, 'moderado'), note: '' },
+                    ])
                   }
                 >
                   + Adicionar bloco

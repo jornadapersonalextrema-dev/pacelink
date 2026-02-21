@@ -14,13 +14,14 @@ type StudentRow = {
   portal_enabled: boolean;
   p1k_sec_per_km: number | null;
 
+  // (1) novo campo
   auth_user_id: string | null;
 };
 
 type WeekRow = {
   id: string;
-  week_start: string;
-  week_end: string | null;
+  week_start: string; // YYYY-MM-DD
+  week_end: string | null; // YYYY-MM-DD
   label: string | null;
 };
 
@@ -36,8 +37,8 @@ type WorkoutRow = {
   include_cooldown: boolean | null;
   cooldown_km: number | null;
 
-  planned_date: string | null;
-  planned_day: number | null;
+  planned_date: string | null; // YYYY-MM-DD
+  planned_day: number | null; // 0..6
 
   share_slug: string | null;
   week_id: string | null;
@@ -66,8 +67,23 @@ function toISODate(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function getSaoPauloISODate(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+
+  const y = Number(parts.find((p) => p.type === 'year')?.value || 1970);
+  const m = Number(parts.find((p) => p.type === 'month')?.value || 1);
+  const d = Number(parts.find((p) => p.type === 'day')?.value || 1);
+
+  return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+}
+
 function addDaysISO(iso: string, days: number) {
-  const d = new Date(iso + 'T12:00:00');
+  const d = new Date(iso + 'T12:00:00'); // evita problemas de fuso
   d.setDate(d.getDate() + days);
   return toISODate(d);
 }
@@ -84,8 +100,8 @@ function formatWeekRange(weekStart: string, weekEnd: string | null) {
 }
 
 function mondayOfWeek(d: Date) {
-  const day = d.getDay();
-  const diff = (day + 6) % 7;
+  const day = d.getDay(); // 0..6 (Dom..Sáb)
+  const diff = (day + 6) % 7; // dias desde segunda
   const out = new Date(d);
   out.setDate(d.getDate() - diff);
   out.setHours(0, 0, 0, 0);
@@ -97,12 +113,6 @@ function formatPace(secPerKm: number | null) {
   const m = Math.floor(secPerKm / 60);
   const s = Math.round(secPerKm % 60);
   return `${m}:${pad2(s)}/km`;
-}
-
-function isValidEmail(email: string): boolean {
-  const v = (email || '').trim();
-  if (!v) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 }
 
 function formatKm(v: number | null | undefined) {
@@ -117,6 +127,7 @@ const DOW_PT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 function plannedLabel(workout: WorkoutRow, weekStart?: string | null) {
   let iso = workout.planned_date || null;
 
+  // fallback antigo: planned_day + week_start
   if (!iso && weekStart && workout.planned_day != null) {
     iso = addDaysISO(weekStart, Number(workout.planned_day));
   }
@@ -166,12 +177,19 @@ export default function StudentDetailPage() {
   const [inviteLoading, setInviteLoading] = useState(false);
   const [inviteMsg, setInviteMsg] = useState<string | null>(null);
 
-  const [emailModalOpen, setEmailModalOpen] = useState(false);
-  const [emailDraft, setEmailDraft] = useState('');
-  const [emailModalSaving, setEmailModalSaving] = useState(false);
-  const [emailModalError, setEmailModalError] = useState<string | null>(null);
+  // (8) Copiar treino (para este ou outro aluno/semana)
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyWorkoutId, setCopyWorkoutId] = useState<string | null>(null);
+  const [copyLoading, setCopyLoading] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+
+  const [copyStudents, setCopyStudents] = useState<Array<{ id: string; name: string }>>([]);
+  const [copyDestStudentId, setCopyDestStudentId] = useState<string>('');
+  const [copyWeeks, setCopyWeeks] = useState<WeekRow[]>([]);
+  const [copyDestWeekId, setCopyDestWeekId] = useState<string>('');
 
   const currentWeekStartISO = useMemo(() => toISODate(mondayOfWeek(new Date())), []);
+  const todayISO = useMemo(() => getSaoPauloISODate(new Date()), []);
 
   async function loadStudent() {
     setLoading(true);
@@ -179,6 +197,7 @@ export default function StudentDetailPage() {
 
     const { data, error } = await supabase
       .from('students')
+      // (2) inclui auth_user_id
       .select('id,name,email,trainer_id,public_slug,portal_token,portal_enabled,p1k_sec_per_km,auth_user_id')
       .eq('id', studentId)
       .single();
@@ -296,6 +315,180 @@ export default function StudentDetailPage() {
     await loadLatestExecutions(rows.map((r) => r.id));
   }
 
+  async function fetchCopyStudents() {
+    // Lista de alunos ativos do treinador (para copiar para outro aluno)
+    const { data, error } = await supabase
+      .from('students')
+      .select('id,name,is_active')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    const list = ((data as any[]) || [])
+      .filter((s) => s.is_active !== false)
+      .map((s) => ({ id: String(s.id), name: String(s.name || '') }));
+
+    setCopyStudents(list);
+    return list;
+  }
+
+  async function ensureUpcomingWeeksForStudentId(studentIdForWeeks: string) {
+    // Gera (se necessário) um conjunto de semanas futuras para o aluno destino (padrão do treinador)
+    const baseStart = currentWeekStartISO;
+
+    let trainerIdForWeeks = student?.trainer_id || '';
+    if (!trainerIdForWeeks) {
+      const { data: u } = await supabase.auth.getUser();
+      trainerIdForWeeks = (u.user?.id || '') as string;
+    }
+
+    const rows = Array.from({ length: 8 }).map((_, i) => {
+      const ws = addDaysISO(baseStart, i * 7);
+      const we = addDaysISO(ws, 6);
+      const label = `Semana ${formatBRShort(ws)} – ${formatBRShort(we)}`;
+      return { student_id: studentIdForWeeks, trainer_id: trainerIdForWeeks, week_start: ws, week_end: we, label };
+    });
+
+    let tableToUse: 'weeks' | 'training_weeks' = 'weeks';
+
+    let up = await upsertWeeks('weeks', rows);
+    const msg = String(up.error?.message || '').toLowerCase();
+    if (up.error && msg.includes('relation') && msg.includes('weeks')) {
+      tableToUse = 'training_weeks';
+      up = await upsertWeeks('training_weeks', rows);
+    }
+    // Se der erro diferente, não aborta a cópia; tenta apenas ler as semanas existentes
+    if (!up.error) {
+      // ok
+    }
+
+    const sel = await selectWeeks(tableToUse, studentIdForWeeks);
+    if (sel.error) throw sel.error;
+
+    const list = (sel.data || []) as any[];
+
+    // Para cópia/programação, NÃO oferecer semanas passadas
+    const filtered = list.filter((w) => {
+      const end = w.week_end || addDaysISO(w.week_start, 6);
+      return String(end) >= todayISO;
+    });
+
+    return filtered as WeekRow[];
+  }
+
+  function openCopyModal(workoutId: string) {
+    setCopyWorkoutId(workoutId);
+    setCopyError(null);
+    setCopyOpen(true);
+
+    // Defaults
+    const defaultStudentId = student?.id || '';
+    setCopyDestStudentId(defaultStudentId);
+  }
+
+  function closeCopyModal() {
+    setCopyOpen(false);
+    setCopyWorkoutId(null);
+    setCopyError(null);
+    setCopyDestStudentId('');
+    setCopyDestWeekId('');
+    setCopyWeeks([]);
+  }
+
+  async function confirmCopy() {
+    if (!copyWorkoutId) return;
+    if (!copyDestStudentId) {
+      setCopyError('Selecione o aluno destino.');
+      return;
+    }
+    if (!copyDestWeekId) {
+      setCopyError('Selecione a semana destino.');
+      return;
+    }
+
+    // Abre a tela de novo treino com pré-preenchimento
+    router.push(
+      `/students/${encodeURIComponent(copyDestStudentId)}/workouts/new?weekId=${encodeURIComponent(
+        copyDestWeekId
+      )}&copyFrom=${encodeURIComponent(copyWorkoutId)}`
+    );
+
+    closeCopyModal();
+  }
+
+  // Carrega alunos e semanas no modal de cópia
+  useEffect(() => {
+    if (!copyOpen) return;
+
+    let alive = true;
+
+    (async () => {
+      try {
+        setCopyLoading(true);
+        setCopyError(null);
+
+        const list = copyStudents.length ? copyStudents : await fetchCopyStudents();
+
+        // Se ainda não definiu, default é o aluno atual
+        const destId = copyDestStudentId || student?.id || (list[0]?.id || '');
+        if (!alive) return;
+        if (destId) setCopyDestStudentId(destId);
+
+        if (destId) {
+          const wks = await ensureUpcomingWeeksForStudentId(destId);
+          if (!alive) return;
+          setCopyWeeks(wks);
+
+          // default week: semana atual (se existir) ou primeira disponível
+          const cur = wks.find((w) => String(w.week_start) === currentWeekStartISO) || wks[0] || null;
+          setCopyDestWeekId(cur?.id || '');
+        }
+      } catch (e: any) {
+        if (!alive) return;
+        setCopyError(e?.message || 'Erro ao preparar cópia.');
+      } finally {
+        if (!alive) return;
+        setCopyLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [copyOpen]);
+
+  useEffect(() => {
+    if (!copyOpen) return;
+    if (!copyDestStudentId) return;
+
+    let alive = true;
+
+    (async () => {
+      try {
+        setCopyLoading(true);
+        setCopyError(null);
+
+        const wks = await ensureUpcomingWeeksForStudentId(copyDestStudentId);
+        if (!alive) return;
+        setCopyWeeks(wks);
+
+        const cur = wks.find((w) => String(w.week_start) === currentWeekStartISO) || wks[0] || null;
+        setCopyDestWeekId(cur?.id || '');
+      } catch (e: any) {
+        if (!alive) return;
+        setCopyError(e?.message || 'Erro ao carregar semanas do aluno destino.');
+      } finally {
+        if (!alive) return;
+        setCopyLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [copyDestStudentId, copyOpen]);
+
   async function publishWeek() {
     if (!selectedWeekId) return;
     setBanner(null);
@@ -395,18 +588,13 @@ export default function StudentDetailPage() {
     }
   }
 
-  async function inviteStudentAccess(skipEmailCheck = false) {
+  // (5) inviteStudentAccess
+  async function inviteStudentAccess() {
     if (!student) return;
     setInviteMsg(null);
     setBanner(null);
 
-    const emailTrim = (student.email ?? '').toString().trim();
-    if (!skipEmailCheck && !emailTrim) {
-      openEmailModal('');
-      return;
-    }
-
-    if (!emailTrim) {
+    if (!student.email) {
       setInviteMsg('Cadastre o e-mail do aluno antes de enviar o convite.');
       return;
     }
@@ -423,51 +611,6 @@ export default function StudentDetailPage() {
       setInviteMsg(e?.message || 'Erro ao enviar convite.');
     } finally {
       setInviteLoading(false);
-    }
-  }
-
-  async function patchStudentEmail(studentId: string, emailValue: string) {
-    const res = await fetch(`/api/trainer/students/${studentId}/email`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: emailValue }),
-    });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-    return (json?.email || emailValue) as string;
-  }
-
-  function openEmailModal(prefill?: string | null) {
-    setEmailModalError(null);
-    setEmailDraft((prefill || '').toString());
-    setEmailModalOpen(true);
-  }
-
-  async function saveEmailAndInvite() {
-    if (!student) return;
-
-    const v = (emailDraft || '').trim();
-    if (!isValidEmail(v)) {
-      setEmailModalError('E-mail inválido.');
-      return;
-    }
-
-    setEmailModalSaving(true);
-    setEmailModalError(null);
-    try {
-      const normalized = v.toLowerCase();
-      await patchStudentEmail(student.id, normalized);
-
-      setStudent((prev) => (prev ? ({ ...prev, email: normalized } as any) : prev));
-
-      setEmailModalOpen(false);
-
-      await inviteStudentAccess(true);
-      await loadStudent();
-    } catch (e: any) {
-      setEmailModalError(e?.message || 'Erro ao salvar e-mail.');
-    } finally {
-      setEmailModalSaving(false);
     }
   }
 
@@ -528,6 +671,11 @@ export default function StudentDetailPage() {
 
   const selectedWeek = weeks.find((w) => w.id === selectedWeekId) || null;
 
+  const selectedWeekEndISO = selectedWeek
+    ? (selectedWeek.week_end || addDaysISO(selectedWeek.week_start, 6))
+    : null;
+  const isSelectedWeekPast = !!selectedWeekEndISO && String(selectedWeekEndISO) < todayISO;
+
   const readyCount = workouts.filter((w) => w.status === 'ready').length;
   const draftCount = workouts.filter((w) => w.status === 'draft').length;
   const completedCount = workouts.filter((w) => latestExecByWorkout[w.id]?.status === 'completed').length;
@@ -557,8 +705,12 @@ export default function StudentDetailPage() {
           <div className="mt-3 grid grid-cols-1 sm:grid-cols-5 gap-2">
             <button
               className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold disabled:opacity-50"
-              disabled={!selectedWeekId}
-              onClick={() => router.push(`/students/${studentId}/workouts/new?weekId=${selectedWeekId}`)}
+              disabled={!selectedWeekId || isSelectedWeekPast}
+              title={isSelectedWeekPast ? 'Semana passada: não é permitido programar treinos.' : 'Programar treino na semana selecionada'}
+              onClick={() => {
+                if (isSelectedWeekPast) return;
+                router.push(`/students/${studentId}/workouts/new?weekId=${selectedWeekId}`);
+              }}
             >
               + Programar treino
             </button>
@@ -590,13 +742,9 @@ export default function StudentDetailPage() {
               className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold disabled:opacity-50"
               disabled={inviteLoading}
               onClick={() => void inviteStudentAccess()}
-              title={
-                !(student?.email || '').trim()
-                  ? 'Cadastre o e-mail do aluno para enviar o convite'
-                  : 'Envia (ou reenviar) acesso por e-mail para o aluno definir a senha'
-              }
+              title={!(student?.email || '').trim() ? 'Cadastre o e-mail do aluno para enviar o convite' : 'Envia (ou reenviar) acesso por e-mail'}
             >
-              {inviteLoading ? 'Enviando…' : (student?.email || '').trim() ? 'Enviar/Reenviar acesso' : 'Cadastrar e enviar acesso'}
+              {inviteLoading ? 'Enviando…' : 'Enviar/Reenviar acesso'}
             </button>
           </div>
         </div>
@@ -611,48 +759,66 @@ export default function StudentDetailPage() {
           </div>
         )}
 
-        {emailModalOpen && (
+        {copyOpen && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50 p-4">
             <div className="w-full max-w-md rounded-2xl bg-white dark:bg-surface-dark border border-slate-200/20 p-5">
-              <div className="text-lg font-black mb-1">Cadastrar e-mail do aluno</div>
+              <div className="text-lg font-black mb-1">Copiar treino</div>
               <div className="text-sm text-slate-500 dark:text-slate-300 mb-4">
-                Para enviar o convite e criar a senha de acesso, informe o e-mail do aluno.
+                Selecione o aluno e a semana destino. O treino será criado como <b>rascunho</b>.
               </div>
 
-              {emailModalError && (
+              {copyError && (
                 <div className="rounded-xl bg-red-50 dark:bg-red-900/20 p-3 text-sm text-red-700 dark:text-red-200 mb-4">
-                  {emailModalError}
+                  {copyError}
                 </div>
               )}
 
-              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">E-mail</label>
-              <input
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                value={emailDraft}
-                onChange={(e) => setEmailDraft(e.target.value)}
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Aluno destino</label>
+              <select
+                value={copyDestStudentId}
+                onChange={(e) => setCopyDestStudentId(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-surface-dark px-4 py-3 text-slate-900 dark:text-white outline-none mb-4"
+                disabled={copyLoading}
+              >
+                <option value="">Selecione…</option>
+                {copyStudents.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Semana destino</label>
+              <select
+                value={copyDestWeekId}
+                onChange={(e) => setCopyDestWeekId(e.target.value)}
                 className="w-full rounded-xl border border-slate-200 dark:border-white/10 bg-white dark:bg-surface-dark px-4 py-3 text-slate-900 dark:text-white outline-none"
-                placeholder="aluno@email.com"
-              />
+                disabled={copyLoading || !copyDestStudentId}
+              >
+                <option value="">Selecione…</option>
+                {copyWeeks.map((w) => {
+                  const end = w.week_end || addDaysISO(w.week_start, 6);
+                  return (
+                    <option key={w.id} value={w.id}>
+                      {(w.label || `Semana ${formatBRShort(w.week_start)} – ${formatBRShort(end)}`)}
+                    </option>
+                  );
+                })}
+              </select>
 
               <div className="mt-5 space-y-3">
                 <button
                   className="w-full px-4 py-3 rounded-xl bg-emerald-600 text-white font-black disabled:opacity-50"
-                  disabled={emailModalSaving}
-                  onClick={saveEmailAndInvite}
+                  disabled={copyLoading || !copyWorkoutId || !copyDestStudentId || !copyDestWeekId}
+                  onClick={confirmCopy}
                 >
-                  {emailModalSaving ? 'Salvando…' : 'Salvar e enviar acesso'}
+                  {copyLoading ? 'Preparando…' : 'Continuar'}
                 </button>
 
                 <button
                   className="w-full text-center text-slate-500 dark:text-slate-300 font-bold py-2 disabled:opacity-50"
-                  disabled={emailModalSaving}
-                  onClick={() => {
-                    setEmailModalOpen(false);
-                    setEmailDraft('');
-                    setEmailModalError(null);
-                  }}
+                  disabled={copyLoading}
+                  onClick={closeCopyModal}
                 >
                   Cancelar
                 </button>
@@ -815,6 +981,17 @@ export default function StudentDetailPage() {
                               Publicar
                             </button>
                           ) : null}
+
+                          <button
+                            className="px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-sm font-semibold"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              openCopyModal(w.id);
+                            }}
+                          >
+                            Copiar
+                          </button>
 
                           <button
                             className="px-3 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold"
