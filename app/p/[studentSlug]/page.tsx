@@ -2,16 +2,12 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import { createClient } from '../../../lib/supabaseBrowser';
-
-type WeekRow = { id: string; week_start: string; week_end: string | null; label: string | null };
 
 type SummaryResponse = {
   ok: boolean;
   error?: string;
-  student?: { id: string; name: string; public_slug: string | null; portal_token?: string | null };
-  weeks?: WeekRow[];
-  week?: WeekRow | null;
+  student?: { id: string; name: string; public_slug: string | null };
+  week?: { id: string; week_start: string; week_end: string | null; label: string | null };
   counts?: { planned: number; ready: number; completed: number; pending: number; canceled?: number };
   workouts?: any[];
   latest_execution_by_workout?: Record<string, any>;
@@ -58,11 +54,6 @@ function kmLabel(km: number | null) {
   return Number(km).toFixed(1).replace('.', ',');
 }
 
-function weekLabel(w: WeekRow) {
-  const end = w.week_end || addDaysISO(w.week_start, 6);
-  return w.label || `${formatBRShort(w.week_start)} – ${formatBRShort(end)}`;
-}
-
 type DayAgg = {
   day: string; // YYYY-MM-DD
   workouts: any[];
@@ -79,9 +70,6 @@ export default function StudentPortalHomePage() {
   const params = useParams<{ studentSlug: string }>();
   const search = useSearchParams();
 
-  const supabase = useMemo(() => createClient(), []);
-  const [hasSession, setHasSession] = useState(false);
-
   const studentSlug = params.studentSlug;
   const t = search.get('t') || '';
   const preview = search.get('preview') === '1';
@@ -90,39 +78,7 @@ export default function StudentPortalHomePage() {
   const [banner, setBanner] = useState<string | null>(null);
   const [data, setData] = useState<SummaryResponse | null>(null);
 
-  const [weekId, setWeekId] = useState<string | null>(null);
-
   const token = useMemo(() => t, [t]);
-
-  // Se o aluno estiver logado (Auth), mostramos o botão “Sair” também no portal /p/...
-  useEffect(() => {
-    let alive = true;
-
-    async function check() {
-      const { data } = await supabase.auth.getSession();
-      if (!alive) return;
-      setHasSession(!!data.session);
-    }
-
-    void check();
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setHasSession(!!session);
-    });
-
-    return () => {
-      alive = false;
-      listener.subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  async function onLogout() {
-    try {
-      await supabase.auth.signOut();
-    } finally {
-      router.push('/aluno/login');
-    }
-  }
 
   useEffect(() => {
     let alive = true;
@@ -132,12 +88,12 @@ export default function StudentPortalHomePage() {
       setBanner(null);
 
       try {
-        let url = `/api/portal/summary?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(token)}`;
-        if (weekId) url += `&weekId=${encodeURIComponent(weekId)}`;
+        const res = await fetch(
+          `/api/portal/summary?slug=${encodeURIComponent(studentSlug)}&t=${encodeURIComponent(token)}`,
+          { cache: 'no-store' }
+        );
 
-        const res = await fetch(url, { cache: 'no-store' });
         const json = (await res.json()) as SummaryResponse;
-
         if (!alive) return;
 
         if (!json.ok) {
@@ -164,10 +120,9 @@ export default function StudentPortalHomePage() {
     return () => {
       alive = false;
     };
-  }, [studentSlug, token, weekId]);
+  }, [studentSlug, token]);
 
-  const week = data?.week || null;
-  const weeks = data?.weeks || [];
+  const week = data?.week;
   const counts = data?.counts;
   const workouts = data?.workouts || [];
   const latest = data?.latest_execution_by_workout || {};
@@ -221,6 +176,7 @@ export default function StudentPortalHomePage() {
     for (const d of days) {
       d.planned_km = Math.round(d.planned_km * 10) / 10;
       d.actual_km = Math.round(d.actual_km * 10) / 10;
+      // Se existir um campo de ordem, pode ordenar aqui sem quebrar:
       // d.workouts.sort((a, b) => Number(a.planned_order || 0) - Number(b.planned_order || 0));
     }
 
@@ -261,54 +217,118 @@ export default function StudentPortalHomePage() {
       if (typeof navigator !== 'undefined' && typeof (navigator as any).vibrate === 'function') {
         (navigator as any).vibrate(10);
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   function closeSheetAnimated() {
-    setSheetDragging(true);
-    setSheetTranslateY(420);
+    if (!sheetDay) return;
+
+    vibrateClose();
+    setSheetDragging(false);
+
+    const h =
+      typeof window !== 'undefined'
+        ? Math.max(window.innerHeight || 0, document.documentElement?.clientHeight || 0)
+        : 800;
+
+    setSheetTranslateY(h);
+
     window.setTimeout(() => {
       setSheetDay(null);
       setSheetTranslateY(0);
-      setSheetDragging(false);
-      vibrateClose();
-    }, 140);
+      dragRef.current.active = false;
+      dragRef.current.pointerId = -1;
+    }, 220);
   }
 
-  function onSheetPointerDown(e: React.PointerEvent) {
+  useEffect(() => {
+    // quando muda a semana, fecha sheet
+    setSheetDay(null);
+  }, [week?.id]);
+
+  useEffect(() => {
+    // ao abrir sheet, reset posição
+    if (sheetDay) {
+      setSheetTranslateY(0);
+      setSheetDragging(false);
+      dragRef.current.active = false;
+      dragRef.current.pointerId = -1;
+    }
+  }, [sheetDay?.day]);
+
+  useEffect(() => {
+    // trava scroll do body quando sheet abre
+    if (!sheetDay) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [sheetDay]);
+
+  // ✅ Fechar com ESC (desktop)
+  useEffect(() => {
+    if (!sheetDay) return;
+
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        closeSheetAnimated();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetDay]);
+
+  function onSheetGrabPointerDown(e: React.PointerEvent) {
+    // apenas botão esquerdo/mão ou toque
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
     dragRef.current.active = true;
     dragRef.current.pointerId = e.pointerId;
     dragRef.current.startY = e.clientY;
-    dragRef.current.startTime = performance.now();
     dragRef.current.lastY = e.clientY;
+    dragRef.current.startTime = performance.now();
     dragRef.current.lastTime = dragRef.current.startTime;
+
     setSheetDragging(true);
+
     try {
       (e.currentTarget as any).setPointerCapture?.(e.pointerId);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
-  function onSheetPointerMove(e: React.PointerEvent) {
+  function onSheetGrabPointerMove(e: React.PointerEvent) {
     if (!dragRef.current.active) return;
     if (dragRef.current.pointerId !== e.pointerId) return;
 
     const dy = e.clientY - dragRef.current.startY;
+    const clamped = Math.max(0, dy);
+
+    setSheetTranslateY(clamped);
+
     dragRef.current.lastY = e.clientY;
     dragRef.current.lastTime = performance.now();
-
-    setSheetTranslateY(Math.max(0, dy));
   }
 
-  function onSheetPointerUp(e: React.PointerEvent) {
+  function onSheetGrabPointerEnd(e: React.PointerEvent) {
     if (!dragRef.current.active) return;
     if (dragRef.current.pointerId !== e.pointerId) return;
 
-    dragRef.current.active = false;
-    const dy = e.clientY - dragRef.current.startY;
-
-    const dt = (performance.now() - dragRef.current.startTime) || 1;
+    const dy = Math.max(0, dragRef.current.lastY - dragRef.current.startY);
+    const dt = Math.max(1, dragRef.current.lastTime - dragRef.current.startTime); // ms
     const v = dy / dt; // px/ms
 
+    dragRef.current.active = false;
+    dragRef.current.pointerId = -1;
+
+    // thresholds:
     const shouldClose = dy > 160 || (dy > 70 && v > 0.9);
 
     if (shouldClose) {
@@ -316,28 +336,10 @@ export default function StudentPortalHomePage() {
       return;
     }
 
+    // voltar suavemente
     setSheetDragging(false);
     setSheetTranslateY(0);
   }
-
-  // Chips
-  const chipsRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!week?.id) return;
-    if (!chipsRef.current) return;
-
-    // Centraliza chip ativo no scroll
-    const root = chipsRef.current;
-    const active = root.querySelector<HTMLButtonElement>(`button[data-week-id="${week.id}"]`);
-    if (!active) return;
-
-    const rootRect = root.getBoundingClientRect();
-    const btnRect = active.getBoundingClientRect();
-    const delta = btnRect.left - rootRect.left - (rootRect.width / 2 - btnRect.width / 2);
-
-    root.scrollTo({ left: root.scrollLeft + delta, behavior: 'smooth' });
-  }, [week?.id, weeks.length]);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background-dark to-black text-white">
@@ -356,9 +358,9 @@ export default function StudentPortalHomePage() {
             ) : null}
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-2">
+          <div className="flex items-center gap-3">
             <button
-              className="text-sm underline text-white/70 hover:text-white"
+              className="text-sm underline text-white/70"
               onClick={() => {
                 const studentId = data?.student?.id;
                 if (!studentId) return;
@@ -368,18 +370,12 @@ export default function StudentPortalHomePage() {
                 router.push(`/students/${studentId}/reports/4w?${q.toString()}`);
               }}
             >
-              Relatório 4 semanas
+              Relatório
             </button>
 
-            <button className="text-sm underline text-white/70 hover:text-white" onClick={() => window.location.reload()}>
+            <button className="text-sm underline text-white/70" onClick={() => window.location.reload()}>
               Atualizar
             </button>
-
-            {!preview && hasSession ? (
-              <button className="text-sm underline text-white/70 hover:text-white" onClick={onLogout}>
-                Sair
-              </button>
-            ) : null}
           </div>
         </div>
       </header>
@@ -387,36 +383,7 @@ export default function StudentPortalHomePage() {
       <main className="px-6 py-6">
         <div className="mx-auto max-w-3xl space-y-4">
           {banner ? (
-            <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4 text-sm text-amber-200">
-              {banner}
-            </div>
-          ) : null}
-
-          {weeks.length ? (
-            <div
-              ref={chipsRef}
-              className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1 scroll-smooth"
-              style={{ WebkitOverflowScrolling: 'touch' as any }}
-            >
-              {weeks.map((w) => {
-                const active = w.id === week?.id;
-                return (
-                  <button
-                    key={w.id}
-                    data-week-id={w.id}
-                    onClick={() => setWeekId(w.id)}
-                    className={[
-                      'shrink-0 rounded-full px-4 py-2 text-sm font-semibold border',
-                      active
-                        ? 'bg-emerald-500 text-black border-emerald-400'
-                        : 'bg-white/5 text-white/80 border-white/10 hover:bg-white/10',
-                    ].join(' ')}
-                  >
-                    {`Semana ${weekLabel(w)}`}
-                  </button>
-                );
-              })}
-            </div>
+            <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4 text-sm text-amber-200">{banner}</div>
           ) : null}
 
           {loading ? (
@@ -477,54 +444,24 @@ export default function StudentPortalHomePage() {
 
                             setSheetDay(d);
                           }}
-                          className={[
-                            'text-left rounded-2xl border p-4 transition',
+                          className={`rounded-xl border px-4 py-3 text-left transition ${
                             hasWorkout
-                              ? 'border-white/10 bg-white/5 hover:bg-white/10'
-                              : 'border-white/5 bg-white/3 opacity-70 cursor-default',
-                          ].join(' ')}
+                              ? 'bg-black/20 border-white/10 hover:bg-black/30'
+                              : 'bg-black/10 border-white/5 opacity-60 cursor-default'
+                          }`}
                         >
-                          <div className="text-sm text-white/60">{formatBRFull(d.day)}</div>
-
-                          <div className="mt-2 flex items-end justify-between gap-3">
-                            <div>
-                              <div className="text-lg font-extrabold">{d.workouts_count} treino(s)</div>
-                              <div className="text-sm text-white/70 mt-1">
-                                previsto <b>{kmLabel(d.planned_km)}</b> km · real <b>{kmLabel(d.actual_km)}</b> km
-                              </div>
-                            </div>
-
-                            <div className="text-right text-xs text-white/60">
-                              <div>
-                                Concluídos: <b className="text-white/80">{d.completed}</b> · Pendentes:{' '}
-                                <b className="text-white/80">{d.pending}</b>
-                              </div>
-                              <div>
-                                Cancelados: <b className="text-white/80">{d.canceled}</b>
-                              </div>
-                              <div className="mt-2 text-sm underline text-white/70">{actionLabel}</div>
-                            </div>
+                          <div className="text-xs text-white/60">{formatBRFull(d.day)}</div>
+                          <div className="mt-1 text-sm">
+                            <b>{d.workouts_count}</b> treino(s){' '}
+                            <span className="text-white/60">
+                              · previsto {kmLabel(d.planned_km)} km · real {kmLabel(d.actual_km)} km
+                            </span>
+                          </div>
+                          <div className="mt-1 text-xs text-white/60">
+                            Concluídos: {d.completed} · Pendentes: {d.pending} · Cancelados: {d.canceled}
                           </div>
 
-                          {d.workouts_count === 1 && d.workouts[0] ? (
-                            <div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-sm font-semibold truncate">
-                                    {d.workouts[0].title || TEMPLATE_LABEL[d.workouts[0].template_type] || 'Treino'}
-                                  </div>
-                                  <div className="text-xs text-white/60 mt-0.5">
-                                    {d.workouts[0].status === 'canceled'
-                                      ? 'Cancelado'
-                                      : d.workouts[0].execution_label
-                                        ? `Disponível · ${d.workouts[0].execution_label}`
-                                        : 'Disponível'}
-                                  </div>
-                                </div>
-                                <div className="text-sm text-white/70">Ver treino →</div>
-                              </div>
-                            </div>
-                          ) : null}
+                          <div className="mt-2 text-xs text-white/70">{actionLabel}</div>
                         </button>
                       );
                     })}
@@ -536,60 +473,97 @@ export default function StudentPortalHomePage() {
         </div>
       </main>
 
+      {/* Bottom-sheet (somente quando tiver 2+ treinos no mesmo dia) */}
       {sheetDay ? (
-        <div className="fixed inset-0 z-50">
+        <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label={`Treinos de ${formatBRFull(sheetDay.day)}`}>
+          {/* backdrop */}
           <button
-            className="absolute inset-0 bg-black/60"
-            onClick={closeSheetAnimated}
+            className="absolute inset-0 bg-black/70"
             aria-label="Fechar"
+            onClick={() => closeSheetAnimated()}
           />
 
-          <div
-            className={[
-              'absolute left-0 right-0 bottom-0 mx-auto max-w-3xl rounded-t-3xl border border-white/10 bg-[#0b1220] p-4',
-              sheetDragging ? 'transition-none' : 'transition-transform duration-150 ease-out',
-            ].join(' ')}
-            style={{ transform: `translateY(${sheetTranslateY}px)` }}
-          >
-            <div
-              className="mx-auto mb-2 h-1.5 w-14 rounded-full bg-white/20"
-              onPointerDown={onSheetPointerDown}
-              onPointerMove={onSheetPointerMove}
-              onPointerUp={onSheetPointerUp}
-              onPointerCancel={onSheetPointerUp}
-            />
-
-            <div className="flex items-center justify-between gap-3">
-              <div className="font-semibold">Treinos em {formatBRFull(sheetDay.day)}</div>
-              <button className="text-sm underline text-white/70" onClick={closeSheetAnimated}>
-                Fechar
-              </button>
-            </div>
-
-            <div className="mt-3 space-y-2">
-              {sheetDay.workouts.map((w: any) => (
-                <button
-                  key={w.id}
-                  onClick={() => goToWorkout(String(w.id))}
-                  className="w-full text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 p-3"
+          {/* sheet container */}
+          <div className="absolute inset-x-0 bottom-0">
+            <div className="mx-auto max-w-3xl px-4 pb-6">
+              <div
+                className="rounded-2xl border border-white/10 bg-background-dark shadow-2xl overflow-hidden"
+                style={{
+                  transform: `translateY(${sheetTranslateY}px)`,
+                  transition: sheetDragging ? 'none' : 'transform 200ms ease-out',
+                }}
+              >
+                {/* Grabber/drag area (não interfere no scroll da lista) */}
+                <div
+                  className="pt-3 pb-2 border-b border-white/10"
+                  style={{ touchAction: 'none' }}
+                  onPointerDown={onSheetGrabPointerDown}
+                  onPointerMove={onSheetGrabPointerMove}
+                  onPointerUp={onSheetGrabPointerEnd}
+                  onPointerCancel={onSheetGrabPointerEnd}
                 >
-                  <div className="flex items-center justify-between gap-3">
+                  <div className="h-1.5 w-12 rounded-full bg-white/20 mx-auto" />
+                  <div className="mt-2 px-4 flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="text-sm font-semibold truncate">
-                        {w.title || TEMPLATE_LABEL[w.template_type] || 'Treino'}
-                      </div>
-                      <div className="text-xs text-white/60 mt-0.5">
-                        {w.status === 'canceled'
-                          ? 'Cancelado'
-                          : w.execution_label
-                            ? `Disponível · ${w.execution_label}`
-                            : 'Disponível'}
-                      </div>
+                      <div className="text-xs text-white/60">Treinos de</div>
+                      <div className="font-semibold truncate">{formatBRFull(sheetDay.day)}</div>
                     </div>
-                    <div className="text-sm text-white/70">Ver treino →</div>
+
+                    <button
+                      className="text-sm underline text-white/70"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        closeSheetAnimated();
+                      }}
+                    >
+                      Fechar
+                    </button>
                   </div>
-                </button>
-              ))}
+                </div>
+
+                {/* content */}
+                <div className="p-4 space-y-3 max-h-[70vh] overflow-auto">
+                  {sheetDay.workouts.map((w: any) => {
+                    const ex = latest[w.id];
+
+                    const progress =
+                      w.portal_progress_label ||
+                      (w.status === 'canceled'
+                        ? 'Cancelado'
+                        : ex?.status === 'completed'
+                          ? `Concluído (${formatBRShort(ex.performed_at || ex.completed_at || null)})`
+                          : ex?.status === 'running' || ex?.status === 'paused' || ex?.status === 'in_progress'
+                            ? 'Em andamento'
+                            : w.status === 'ready'
+                              ? 'Pendente'
+                              : '—');
+
+                    const title = w.title || TEMPLATE_LABEL[w.template_type] || 'Treino';
+                    const tpl = TEMPLATE_LABEL[w.template_type] || 'Treino';
+
+                    return (
+                      <button
+                        key={w.id}
+                        className="w-full text-left rounded-xl border border-white/10 bg-black/20 hover:bg-black/30 transition p-4"
+                        onClick={() => {
+                          const id = String(w.id || '');
+                          if (!id) return;
+                          closeSheetAnimated();
+                          window.setTimeout(() => goToWorkout(id), 120);
+                        }}
+                      >
+                        <div className="text-xs text-white/60">
+                          {tpl} · {kmLabel(w.total_km)} km · {progress}
+                        </div>
+                        <div className="mt-1 font-semibold">{title}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="pb-2" />
+              </div>
             </div>
           </div>
         </div>
