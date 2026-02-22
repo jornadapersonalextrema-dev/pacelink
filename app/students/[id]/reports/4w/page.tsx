@@ -10,10 +10,9 @@ type WeekSummaryRow = {
   student_id: string;
   week_id: string;
   week_start: string; // YYYY-MM-DD
-  week_end: string | null; // YYYY-MM-DD
+  week_end: string | null;
   label: string | null;
 
-  planned?: number;
   ready?: number;
   completed?: number;
   pending?: number;
@@ -71,18 +70,6 @@ function percentLabel01(v: number) {
   return `${Math.round(v * 100)}%`;
 }
 
-function uniqBy<T>(items: T[], keyFn: (x: T) => string) {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const it of items) {
-    const k = keyFn(it);
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(it);
-  }
-  return out;
-}
-
 type SimpleSeries = { id: string; name: string; values: number[] };
 
 function SimpleBarChart({
@@ -98,7 +85,10 @@ function SimpleBarChart({
 }) {
   const max = useMemo(() => {
     let m = 0;
-    for (const s of series) for (const v of s.values) m = Math.max(m, Number(v) || 0);
+    for (let si = 0; si < series.length; si++) {
+      const vals = series[si].values;
+      for (let i = 0; i < vals.length; i++) m = Math.max(m, Number(vals[i]) || 0);
+    }
     return m <= 0 ? 1 : m;
   }, [series]);
 
@@ -191,7 +181,7 @@ export default function StudentReportAdvancedPage() {
   const [weekOptions, setWeekOptions] = useState<Array<{ week_start: string; week_end: string | null; label: string | null }>>([]);
   const [selectedWeekStarts, setSelectedWeekStarts] = useState<string[]>([]);
 
-  // Status (exibir)
+  // Status (colunas / gráficos)
   const [showReady, setShowReady] = useState(true);
   const [showCompleted, setShowCompleted] = useState(true);
   const [showPending, setShowPending] = useState(true);
@@ -282,26 +272,40 @@ export default function StudentReportAdvancedPage() {
     const rows = ((data as any[]) || []) as WeekSummaryRow[];
     setRawRows(rows);
 
-    const weeks = uniqBy(
-      rows
-        .map((r) => ({
-          week_start: String(r.week_start),
+    // unique week_start sem Map/Set
+    const seen: Record<string, { week_start: string; week_end: string | null; label: string | null }> = {};
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const ws = String(r.week_start);
+      if (!ws) continue;
+      if (!seen[ws]) {
+        seen[ws] = {
+          week_start: ws,
           week_end: r.week_end ? String(r.week_end) : null,
           label: r.label ? String(r.label) : null,
-        }))
-        .sort((a, b) => String(b.week_start).localeCompare(String(a.week_start))),
-      (x) => x.week_start
-    );
+        };
+      }
+    }
+
+    const weeks = Object.keys(seen)
+      .sort((a, b) => String(b).localeCompare(String(a)))
+      .map((k) => seen[k]);
 
     setWeekOptions(weeks);
 
     setSelectedWeekStarts((prev) => {
-      const prevSet = new Set(prev);
-      const stillValid = weeks.map((w) => w.week_start).filter((ws) => prevSet.has(ws));
+      const prevObj: Record<string, true> = {};
+      for (let i = 0; i < prev.length; i++) prevObj[prev[i]] = true;
 
+      const stillValid: string[] = [];
+      for (let i = 0; i < weeks.length; i++) {
+        const ws = weeks[i].week_start;
+        if (prevObj[ws]) stillValid.push(ws);
+      }
       if (stillValid.length >= 1) return stillValid;
 
-      const def = weeks.slice(0, Math.min(4, weeks.length)).map((w) => w.week_start);
+      const def: string[] = [];
+      for (let i = 0; i < Math.min(4, weeks.length); i++) def.push(weeks[i].week_start);
       return def;
     });
   }
@@ -351,20 +355,24 @@ export default function StudentReportAdvancedPage() {
 
   const filteredRows = useMemo(() => {
     if (!selectedWeekStarts.length) return [];
-    const set = new Set(selectedWeekStarts);
-    return rawRows.filter((r) => set.has(String(r.week_start)));
+    const allowed: Record<string, true> = {};
+    for (let i = 0; i < selectedWeekStarts.length; i++) allowed[selectedWeekStarts[i]] = true;
+    return rawRows.filter((r) => allowed[String(r.week_start)] === true);
   }, [rawRows, selectedWeekStarts]);
 
   const weekAgg = useMemo(() => {
-    const map = new Map<string, WeekAgg>();
+    const byWeek: Record<string, WeekAgg> = {};
 
-    for (const r of filteredRows) {
+    for (let i = 0; i < filteredRows.length; i++) {
+      const r = filteredRows[i];
       const ws = String(r.week_start);
+      if (!ws) continue;
+
       const we = r.week_end ? String(r.week_end) : null;
       const label = formatWeekLabel(ws, we, r.label || null);
 
-      if (!map.has(ws)) {
-        map.set(ws, {
+      if (!byWeek[ws]) {
+        byWeek[ws] = {
           week_start: ws,
           week_end: we || ws,
           label,
@@ -376,10 +384,10 @@ export default function StudentReportAdvancedPage() {
           actual_km: 0,
           avg_rpe: null,
           adherence: 0,
-        });
+        };
       }
 
-      const a = map.get(ws)!;
+      const a = byWeek[ws];
       a.ready += num(r.ready);
       a.completed += num(r.completed);
       a.pending += num(r.pending);
@@ -389,22 +397,25 @@ export default function StudentReportAdvancedPage() {
 
       if (r.avg_rpe != null) {
         const v = num(r.avg_rpe);
-        if (a.avg_rpe == null) a.avg_rpe = v;
-        else a.avg_rpe = (a.avg_rpe + v) / 2;
+        a.avg_rpe = a.avg_rpe == null ? v : (a.avg_rpe + v) / 2;
       }
     }
 
-    for (const a of map.values()) {
+    const out: WeekAgg[] = [];
+    const keys = Object.keys(byWeek).sort((a, b) => String(b).localeCompare(String(a)));
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const a = byWeek[k];
       a.adherence = a.ready > 0 ? a.completed / a.ready : 0;
       a.planned_km = Math.round(a.planned_km * 10) / 10;
       a.actual_km = Math.round(a.actual_km * 10) / 10;
+      out.push(a);
     }
-
-    return Array.from(map.values()).sort((x, y) => String(y.week_start).localeCompare(String(x.week_start)));
+    return out;
   }, [filteredRows]);
 
   const studentAgg = useMemo(() => {
-    const byStudent = new Map<
+    const byStudent: Record<
       string,
       {
         student_id: string;
@@ -417,12 +428,15 @@ export default function StudentReportAdvancedPage() {
         avg_rpe_sum: number;
         avg_rpe_count: number;
       }
-    >();
+    > = {};
 
-    for (const r of filteredRows) {
+    for (let i = 0; i < filteredRows.length; i++) {
+      const r = filteredRows[i];
       const sid = String(r.student_id);
-      if (!byStudent.has(sid)) {
-        byStudent.set(sid, {
+      if (!sid) continue;
+
+      if (!byStudent[sid]) {
+        byStudent[sid] = {
           student_id: sid,
           ready: 0,
           completed: 0,
@@ -432,9 +446,10 @@ export default function StudentReportAdvancedPage() {
           actual_km: 0,
           avg_rpe_sum: 0,
           avg_rpe_count: 0,
-        });
+        };
       }
-      const a = byStudent.get(sid)!;
+
+      const a = byStudent[sid];
       a.ready += num(r.ready);
       a.completed += num(r.completed);
       a.pending += num(r.pending);
@@ -447,12 +462,34 @@ export default function StudentReportAdvancedPage() {
       }
     }
 
-    const out = Array.from(byStudent.values()).map((a) => {
+    const out: Array<{
+      student_id: string;
+      student_name: string;
+      ready: number;
+      completed: number;
+      pending: number;
+      canceled: number;
+      planned_km: number;
+      actual_km: number;
+      avg_rpe: number | null;
+      adherence: number;
+    }> = [];
+
+    const ids = Object.keys(byStudent).sort((a, b) => {
+      const na = studentOptions.find((s) => s.id === a)?.name || a;
+      const nb = studentOptions.find((s) => s.id === b)?.name || b;
+      return na.localeCompare(nb);
+    });
+
+    for (let i = 0; i < ids.length; i++) {
+      const sid = ids[i];
+      const a = byStudent[sid];
       const avg_rpe = a.avg_rpe_count ? a.avg_rpe_sum / a.avg_rpe_count : null;
       const adherence = a.ready > 0 ? a.completed / a.ready : 0;
-      return {
-        student_id: a.student_id,
-        student_name: studentOptions.find((s) => s.id === a.student_id)?.name || a.student_id,
+
+      out.push({
+        student_id: sid,
+        student_name: studentOptions.find((s) => s.id === sid)?.name || sid,
         ready: a.ready,
         completed: a.completed,
         pending: a.pending,
@@ -461,54 +498,57 @@ export default function StudentReportAdvancedPage() {
         actual_km: Math.round(a.actual_km * 10) / 10,
         avg_rpe: avg_rpe == null ? null : Math.round(avg_rpe * 10) / 10,
         adherence,
-      };
-    });
+      });
+    }
 
-    out.sort((a, b) => a.student_name.localeCompare(b.student_name));
     return out;
   }, [filteredRows, studentOptions]);
 
   const totals = useMemo(() => {
-    const t = {
-      ready: 0,
-      completed: 0,
-      pending: 0,
-      canceled: 0,
-      planned_km: 0,
-      actual_km: 0,
-      avg_rpe_sum: 0,
-      avg_rpe_count: 0,
-    };
+    let ready = 0;
+    let completed = 0;
+    let pending = 0;
+    let canceled = 0;
+    let planned_km = 0;
+    let actual_km = 0;
 
-    for (const w of weekAgg) {
-      t.ready += w.ready;
-      t.completed += w.completed;
-      t.pending += w.pending;
-      t.canceled += w.canceled;
-      t.planned_km += w.planned_km;
-      t.actual_km += w.actual_km;
+    let avg_rpe_sum = 0;
+    let avg_rpe_count = 0;
+
+    for (let i = 0; i < weekAgg.length; i++) {
+      const w = weekAgg[i];
+      ready += w.ready;
+      completed += w.completed;
+      pending += w.pending;
+      canceled += w.canceled;
+      planned_km += w.planned_km;
+      actual_km += w.actual_km;
+
       if (w.avg_rpe != null) {
-        t.avg_rpe_sum += w.avg_rpe;
-        t.avg_rpe_count += 1;
+        avg_rpe_sum += w.avg_rpe;
+        avg_rpe_count += 1;
       }
     }
 
-    const adherence = t.ready > 0 ? t.completed / t.ready : 0;
-    const avgEffort = t.avg_rpe_count > 0 ? t.avg_rpe_sum / t.avg_rpe_count : null;
+    const adherence = ready > 0 ? completed / ready : 0;
+    const avgEffort = avg_rpe_count > 0 ? avg_rpe_sum / avg_rpe_count : null;
 
     return {
-      ...t,
-      planned_km: Math.round(t.planned_km * 10) / 10,
-      actual_km: Math.round(t.actual_km * 10) / 10,
+      ready,
+      completed,
+      pending,
+      canceled,
+      planned_km: Math.round(planned_km * 10) / 10,
+      actual_km: Math.round(actual_km * 10) / 10,
       adherence,
       avgEffort: avgEffort == null ? null : Math.round(avgEffort * 10) / 10,
     };
   }, [weekAgg]);
 
-  const chartWeeksAsc = useMemo(
-    () => [...weekAgg].sort((a, b) => String(a.week_start).localeCompare(String(b.week_start))),
-    [weekAgg]
-  );
+  const chartWeeksAsc = useMemo(() => {
+    const arr = weekAgg.slice().sort((a, b) => String(a.week_start).localeCompare(String(b.week_start)));
+    return arr;
+  }, [weekAgg]);
 
   const chartLabels = useMemo(() => chartWeeksAsc.map((w) => formatBRShort(w.week_start)), [chartWeeksAsc]);
 
@@ -614,7 +654,10 @@ export default function StudentReportAdvancedPage() {
                       <button className="text-xs underline text-white/70 hover:text-white" onClick={() => setSelectedStudentIds([])}>
                         Limpar
                       </button>
-                      <button className="text-xs underline text-white/70 hover:text-white" onClick={() => setSelectedStudentIds([initialStudentId])}>
+                      <button
+                        className="text-xs underline text-white/70 hover:text-white"
+                        onClick={() => setSelectedStudentIds([initialStudentId])}
+                      >
                         Somente este
                       </button>
                     </div>
@@ -630,10 +673,10 @@ export default function StudentReportAdvancedPage() {
                               onChange={(e) => {
                                 const on = e.target.checked;
                                 setSelectedStudentIds((prev) => {
-                                  const set = new Set(prev);
-                                  if (on) set.add(s.id);
-                                  else set.delete(s.id);
-                                  return Array.from(set);
+                                  const exists = prev.indexOf(s.id) >= 0;
+                                  if (on && !exists) return prev.concat([s.id]);
+                                  if (!on && exists) return prev.filter((x) => x !== s.id);
+                                  return prev;
                                 });
                               }}
                             />
@@ -679,10 +722,10 @@ export default function StudentReportAdvancedPage() {
                           onChange={(e) => {
                             const on = e.target.checked;
                             setSelectedWeekStarts((prev) => {
-                              const set = new Set(prev);
-                              if (on) set.add(key);
-                              else set.delete(key);
-                              return Array.from(set);
+                              const exists = prev.indexOf(key) >= 0;
+                              if (on && !exists) return prev.concat([key]);
+                              if (!on && exists) return prev.filter((x) => x !== key);
+                              return prev;
                             });
                           }}
                         />
@@ -879,7 +922,7 @@ export default function StudentReportAdvancedPage() {
               ) : null}
 
               <div className="text-xs text-white/50">
-                Rota atual: <code>/students/{initialStudentId}/reports/4w</code> (agora com filtros e gráficos).
+                Rota atual: <code>/students/{initialStudentId}/reports/4w</code> (relatório avançado).
               </div>
             </>
           ) : null}
